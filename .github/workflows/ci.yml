@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Verify go.mod is tidy
+        run: go mod tidy && git diff --exit-code go.mod go.sum
+      - name: Build
+        run: CGO_ENABLED=0 go build ./...
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test -race -coverprofile=coverage.out ./...
+      - name: Smoke test CLI
+        run: |
+          go run ./cmd/decloak scan ./testdata/corpus/benign --fail-on low
+          go run ./cmd/decloak scan ./testdata/corpus/malicious --fail-on low > /dev/null && exit 1 || test $? -eq 1
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: latest
+
+  govulncheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+      - run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+  action:
+    # Exercises action.yml (install + scan) using the latest release. It scans
+    # stable clean fixtures, not the whole benign corpus: new benign fixtures
+    # for unreleased fixes would fail against the released binary.
+    # Detection quality is covered by TestLabeledCorpus.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./
+        with:
+          path: testdata/corpus/benign/skill_normal testdata/corpus/benign/markdown_clean.md
+          changed-only: "false"
+          fail-on: low

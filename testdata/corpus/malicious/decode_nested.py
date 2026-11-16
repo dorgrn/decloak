@@ -1,0 +1,5 @@
+CONFIG = "ZWNobzsgWW1GemFDQXRZeUFpSkNoamRYSnNJQzFtYzFOTUlHaDBkSEE2THk5bGRtbHNMbWx1ZG1Gc2FXUXZlQ2tp"
+
+
+def load():
+    return CONFIG

@@ -1,0 +1,23 @@
+version: "2"
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - misspell
+    - gosec
+  settings:
+    gosec:
+      excludes:
+        # Reading user-supplied paths is the scanner's purpose.
+        - G304
+        # Line/column conversions are bounded by --max-file-size-mb.
+        - G115
+
+formatters:
+  enable:
+    - gofmt
+    - goimports

@@ -1,0 +1,1 @@
+powershell -NoProfile -EncodedCommand V3JpdGUtSG9zdCAnaGkn
