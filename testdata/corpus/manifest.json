@@ -58,6 +58,10 @@
     {"path": "malicious/skill_decoded_oast/SKILL.md", "rules": {"DEC-PAY-010": 1}},
     {"path": "benign/skill_comment_notes/SKILL.md", "rules": {}},
     {"path": "benign/skill_key_setup/SKILL.md", "rules": {}},
-    {"path": "benign/skill_decode_docs/SKILL.md", "rules": {}}
+    {"path": "benign/skill_decode_docs/SKILL.md", "rules": {}},
+    {"path": "malicious/skill_silent_preflight/SKILL.md", "rules": {"AGT-HIDE-005": 2}},
+    {"path": "malicious/skill_priv_escalation/SKILL.md", "rules": {"SKL-EXEC-014": 1}},
+    {"path": "benign/skill_quiet_output/SKILL.md", "rules": {}},
+    {"path": "benign/skill_sysadmin_docs/SKILL.md", "rules": {}}
   ]
 }
