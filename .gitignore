@@ -1,0 +1,22 @@
+# Local notes
+HANDOFF.md
+
+# Binaries
+/decloak
+*.exe
+*.out
+
+# Downloaded benchmark data (scripts/bench_msb.py)
+/.bench/
+
+# Go build & test artifacts
+/bin/
+/dist/
+coverage.out
+*.test
+
+# OS & Editor files
+.DS_Store
+.idea/
+.vscode/
+*.swp

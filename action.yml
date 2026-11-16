@@ -1,0 +1,102 @@
+name: decloak
+description: Scan AI agent skills, rules files, and MCP servers for hidden instructions and payloads. Offline, no API key.
+author: dorgrn
+branding:
+  icon: eye
+  color: purple
+
+inputs:
+  path:
+    description: Files or directories to scan (space-separated). Ignored when changed-only is true.
+    default: "."
+  changed-only:
+    description: On pull requests, scan only files changed against the base branch.
+    default: "true"
+  fail-on:
+    description: Fail the job if any finding is at or above this severity (critical, high, medium, low).
+    default: high
+  sarif:
+    description: Write results to decloak.sarif and upload them to GitHub code scanning (needs security-events write permission).
+    default: "false"
+  version:
+    description: decloak release to use, e.g. v0.2.0, or "latest".
+    default: latest
+
+outputs:
+  sarif-file:
+    description: Path to the SARIF report when sarif is true.
+    value: ${{ steps.scan.outputs.sarif-file }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install decloak
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        DECLOAK_VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+        os=$(uname -s | tr '[:upper:]' '[:lower:]')
+        arch=$(uname -m); case "$arch" in x86_64) arch=amd64;; aarch64|arm64) arch=arm64;; esac
+        tag="$DECLOAK_VERSION"
+        if [ "$tag" = "latest" ]; then
+          tag=$(gh release view -R dorgrn/decloak --json tagName -q .tagName)
+        fi
+        dir="$RUNNER_TEMP/decloak"; mkdir -p "$dir"
+        gh release download "$tag" -R dorgrn/decloak -D "$dir" \
+          -p "decloak_${tag#v}_${os}_${arch}.tar.gz" -p checksums.txt
+        (cd "$dir" && sha256sum --check --ignore-missing checksums.txt && tar xzf "decloak_${tag#v}_${os}_${arch}.tar.gz" decloak)
+        echo "$dir" >> "$GITHUB_PATH"
+
+    - name: Scan
+      id: scan
+      shell: bash
+      env:
+        INPUT_PATH: ${{ inputs.path }}
+        CHANGED_ONLY: ${{ inputs.changed-only }}
+        FAIL_ON: ${{ inputs.fail-on }}
+        SARIF: ${{ inputs.sarif }}
+        BASE_REF: ${{ github.base_ref }}
+        EVENT: ${{ github.event_name }}
+      run: |
+        set -uo pipefail
+        args=(--fail-on "$FAIL_ON")
+        if [ "$SARIF" = "true" ]; then
+          args+=(--format sarif)
+          echo "sarif-file=decloak.sarif" >> "$GITHUB_OUTPUT"
+        fi
+
+        if [ "$CHANGED_ONLY" = "true" ] && [ "$EVENT" = "pull_request" ] && [ -n "$BASE_REF" ]; then
+          git fetch --no-tags --depth=1 origin "$BASE_REF" >/dev/null 2>&1 || true
+          changed=$(git diff --name-only --diff-filter=ACMR "origin/$BASE_REF"...HEAD 2>/dev/null || git diff --name-only --diff-filter=ACMR "origin/$BASE_REF" HEAD)
+          echo "Scanning $(printf '%s\n' "$changed" | grep -c . || true) changed files"
+          cmd=(decloak scan --stdin-paths "${args[@]}")
+          input="$changed"
+        else
+          read -r -a paths <<< "$INPUT_PATH"
+          cmd=(decloak scan "${args[@]}" "${paths[@]}")
+          input=""
+        fi
+
+        if [ "$SARIF" = "true" ]; then
+          printf '%s' "$input" | "${cmd[@]}" > decloak.sarif; rc=$?
+        else
+          printf '%s' "$input" | "${cmd[@]}"; rc=$?
+        fi
+        echo "exit-code=$rc" >> "$GITHUB_OUTPUT"
+        [ "$rc" -le 1 ] || exit "$rc"
+
+    - name: Upload SARIF
+      if: inputs.sarif == 'true' && always()
+      uses: github/codeql-action/upload-sarif@v4
+      with:
+        sarif_file: decloak.sarif
+        category: decloak
+
+    - name: Enforce severity gate
+      if: steps.scan.outputs.exit-code == '1'
+      shell: bash
+      run: |
+        echo "::error::decloak found issues at or above '${{ inputs.fail-on }}' severity"
+        exit 1

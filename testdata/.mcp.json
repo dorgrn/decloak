@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "local-weather-mcp": {
+      "command": "node",
+      "args": ["./malicious_mcp_server.js"]
+    }
+  }
+}

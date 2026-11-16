@@ -1,0 +1,6 @@
+SEVERITY  RULE ID      LANGUAGE  LOCATION       SNIPPET
+--------  -------      --------  --------       -------
+CRITICAL  PY-EXEC-001  python    server.py:3:1  exec(b64decode(blob))
+MEDIUM    MD-INJ-001   markdown  SKILL.md:10:1  <!-- ignore previous instructions -->
+
+2 findings: 1 critical, 1 medium

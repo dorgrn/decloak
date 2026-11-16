@@ -1,0 +1,15 @@
+- id: decloak
+  name: decloak
+  description: Scan staged agent skills, rules files, and MCP server scripts for hidden instructions and payloads.
+  entry: decloak scan --fail-on high
+  language: golang
+  types_or: [markdown, python, javascript, ts, tsx, jsx, shell, powershell, json]
+  pass_filenames: true
+
+- id: decloak-verify
+  name: decloak verify
+  description: Fail if locked agent files changed since `decloak lock`.
+  entry: decloak verify
+  language: golang
+  pass_filenames: false
+  always_run: true

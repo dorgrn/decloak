@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- No network after load: the scanner runs in WebAssembly and this policy blocks any fetch/XHR/WebSocket. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:">
+<title>decloak: see what's hiding in an AI agent skill</title>
+<meta name="description" content="Paste a SKILL.md, AGENTS.md, rules file or MCP server script. decloak decodes hidden instructions in your browser; nothing is uploaded.">
+<style>
+  :root { --bg:#16181d; --panel:#1f2229; --fg:#e6e6e6; --dim:#9aa0aa; --crit:#ff5370; --high:#f78c6c; --med:#ffcb6b; --low:#89ddff; --acc:#c792ea; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  main { max-width: 1200px; margin: 0 auto; padding: 24px 20px 48px; }
+  h1 { font-size: 26px; margin: 0 0 4px; }
+  h1 span { color: var(--acc); }
+  .sub { color: var(--dim); margin: 0 0 18px; }
+  .grid { display:grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+  .bar { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:8px; }
+  select, input, button { background:var(--panel); color:var(--fg); border:1px solid #333844; border-radius:6px; padding:6px 10px; font:inherit; }
+  button.primary { background:var(--acc); color:#16181d; border:0; font-weight:600; cursor:pointer; }
+  button:disabled { opacity:.5; cursor:wait; }
+  textarea { width:100%; height: 460px; background:var(--panel); color:var(--fg); border:1px solid #333844; border-radius:8px; padding:12px; font:13px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; resize:vertical; }
+  #out { background:var(--panel); border:1px solid #333844; border-radius:8px; padding:12px; min-height:460px; }
+  .summary { font-weight:600; margin-bottom:10px; }
+  .f { border-left:3px solid var(--dim); padding:6px 10px; margin:0 0 10px; background:#1a1d23; border-radius:0 6px 6px 0; }
+  .f.CRITICAL { border-color:var(--crit); } .f.HIGH { border-color:var(--high); } .f.MEDIUM { border-color:var(--med); } .f.LOW { border-color:var(--low); }
+  .sev { font-weight:700; font-size:12px; letter-spacing:.04em; }
+  .CRITICAL .sev { color:var(--crit); } .HIGH .sev { color:var(--high); } .MEDIUM .sev { color:var(--med); } .LOW .sev { color:var(--low); }
+  .rid, .loc { color:var(--dim); font:12px ui-monospace, Menlo, monospace; margin-left:8px; }
+  .msg { margin-top:2px; }
+  .reveal { margin-top:4px; padding:4px 8px; background:#2a1f2e; color:#ffd6f0; border-radius:4px; font:13px ui-monospace, Menlo, monospace; white-space:pre-wrap; word-break:break-all; }
+  .snip { margin-top:4px; color:var(--dim); font:12px ui-monospace, Menlo, monospace; white-space:pre-wrap; word-break:break-all; }
+  .clean { color:#c3e88d; }
+  footer { margin-top:28px; color:var(--dim); font-size:13px; }
+  a { color:var(--acc); }
+  code { font:13px ui-monospace, Menlo, monospace; background:#262a33; padding:1px 5px; border-radius:4px; }
+</style>
+</head>
+<body>
+<main>
+  <h1><span>decloak</span>: see what's hiding in an AI agent skill</h1>
+  <p class="sub">Paste a <code>SKILL.md</code>, <code>AGENTS.md</code>, Cursor rule or MCP server script. The scanner is compiled to WebAssembly and runs in this tab. Nothing is uploaded: the scanner has no network code, and this page's security policy blocks requests to any other site.</p>
+
+  <div class="grid">
+    <section>
+      <div class="bar">
+        <label for="ex">Example:</label>
+        <select id="ex">
+          <option value="tag">Invisible text (Unicode tags)</option>
+          <option value="skill">Malicious skill (comment + base64 + image)</option>
+          <option value="mcp">MCP server (exec of decoded payload)</option>
+          <option value="clean">Clean skill</option>
+        </select>
+        <label for="name">as</label>
+        <input id="name" value="SKILL.md" size="14" aria-label="File name (picks the language)">
+        <button id="go" class="primary" disabled>Loading…</button>
+      </div>
+      <textarea id="src" spellcheck="false" aria-label="File content"></textarea>
+    </section>
+    <section>
+      <div class="bar"><strong>Findings</strong></div>
+      <div id="out"><span class="snip">Loading scanner (~6 MB, once)…</span></div>
+    </section>
+  </div>
+
+  <footer>
+    Same engine as the CLI. For your whole machine, run <code>decloak audit</code>: it finds every skill, rules file and MCP config for Claude Code, Cursor, Codex, Gemini CLI and others.
+    <a href="https://github.com/dorgrn/decloak">github.com/dorgrn/decloak</a>
+  </footer>
+</main>
+<script src="wasm_exec.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
