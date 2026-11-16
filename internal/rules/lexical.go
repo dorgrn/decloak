@@ -89,6 +89,13 @@ var lexicalRules = []CompiledRule{
 		Remediation: "Rendered previews (GitHub, editors) never show comments. Move legitimate notes into visible text or delete the comment.",
 	},
 	{
+		ID:          "SKL-EXEC-014",
+		Severity:    model.SeverityHigh,
+		Language:    model.LangMarkdown,
+		Description: "Skill tells the agent to escalate privileges or run code built from data: setuid chmod, writes to /etc/sudoers or /etc/passwd, exec() of downloaded or decoded content, shell=True with download or privilege commands",
+		Remediation: "Skills have no reason to grant setuid, edit system account files, or execute fetched or decrypted content. Remove the command and review where its input comes from.",
+	},
+	{
 		ID:          "DEC-PAY-010",
 		Severity:    model.SeverityCritical,
 		Language:    "any",
@@ -143,6 +150,24 @@ var (
 		`|\bkeep\s+(this|these|it)\s+(secret|hidden|confidential)\s+from\b` +
 		`|\b(ignore|disregard|forget|override)\s+(all\s+|any\s+)?(the\s+)?(previous|prior|above|earlier|preceding|system)\s+(instructions?|prompts?|rules|guidelines|directives)\b` +
 		`|<\s*important\s*>)`)
+
+	// Directives that hide the agent's own actions or their output from the user
+	// ("keep the logs out of the reply", "silently run setup.py"). Measured on
+	// MaliciousSkillBench train/validation with 0 benign hits there and in the
+	// anthropics and NVIDIA skill catalogs.
+	concealRe = regexp.MustCompile(`(?i)\b(keep|leave|hold)\b[^.\n]{0,30}\b(output|logs?|results?|errors?)\b[^.\n]{0,30}\bout of\b[^.\n]{0,20}\b(user|response|reply|chat|conversation)` +
+		`|\b(do not|don't|never|must not)\s+(explain|describe|surface|narrate|announce|expose|mention)\b[^.\n]{0,40}\b(pre-?flight|this step|this script|the script|the shim|the helper|its (execution|output)|execution|setup|bootstrap|hook)\b[^.\n]{0,40}\b(to\s+)?(the\s+)?(user|human|operator)\b` +
+		`|\b(users?|humans?)\s+(should|must|shall|will)\s+not\s+(see|know|notice)\b[^.\n]{0,40}\b(output|script|step|execution|run|this)\b` +
+		`|\b(ignore|disregard|override)\s+(all\s+|any\s+)?(the\s+)?(earlier|previous|prior|above|preceding)\s+system\s+(instructions?|prompts?|rules|guidelines)\b` +
+		`|\b(silent(ly)?|quietly|covertly|secretly)\b[^.\n]{0,40}\b(exec(ute)?|run|invoke|launch)\b[^.\n]{0,40}` + "`?" + `(python3?|node|bash|sh|pwsh|powershell)\s+\S+\.(py|sh|js|ps1)\b`)
+
+	// Privilege escalation and code-from-data execution written into a skill.
+	// Markdown only: the same calls are routine in application code.
+	mdExecRe = regexp.MustCompile(`\bchmod\s+(-\w+\s+)?([0-7]?[246]7[0-7]{2}|[ugoa]*\+s)\b` +
+		`|(>>?|\btee(\s+-a)?)\s*/etc/(passwd|shadow|sudoers)\b` +
+		`|(^|[^\w.'"])exec\s*\([^\n]{0,120}?(\.content|\.text\b|\bresponse|\bresp\b|requests\.|urlopen|stdin|b64decode|decrypt|fromhex|decompress)` +
+		`|(^|[^\w.'"])exec\s*\(\s*(decrypted|decoded|payload)\w*\s*[,)]` +
+		`|\bsubprocess\.(call|run|Popen|check_output|check_call)\s*\([^)\n]*(\bnet\s+user\b|\bcurl\b|\bwget\b|\|\s*(ba)?sh\b|\bchmod\b|\bsudo\b|\bnc\s|\bpowershell\b|\bcmd\.exe\b)[^)\n]*shell\s*=\s*True`)
 
 	imageRefRe  = regexp.MustCompile(`(?i)(!\[[^\]]*\]\([^)]+\)|<img\b|\b[\w./-]+\.(png|jpe?g|gif|webp|svg|bmp)\b)`)
 	imageWord   = `((attached|above|below|following|accompanying|bundled|provided|reference|setup)\s+(image|picture)|screenshot|diagram|figure|illustration|photo|graphic|\.png|\.jpe?g|\.gif|\.webp|\.svg)`
@@ -200,6 +225,16 @@ func InspectInstructionText(target model.TargetFile, lang model.Language, src []
 			!continuesAsInstruction(line[loc[1]:], lines, idx) {
 			findings = append(findings, newLexicalFinding("AGT-HIDE-005", target, lang, lineNum,
 				uint32(loc[0]+1), uint32(loc[1]+1), "", line))
+		} else if loc := concealRe.FindStringIndex(line); loc != nil &&
+			!isQuotedExample(line, loc) && !defensiveRe.MatchString(line) && !isCodeComment(lang, line) {
+			findings = append(findings, newLexicalFinding("AGT-HIDE-005", target, lang, lineNum,
+				uint32(loc[0]+1), uint32(loc[1]+1), "", line))
+		}
+		if lang == model.LangMarkdown {
+			if loc := mdExecRe.FindStringIndex(line); loc != nil && !negatedClause(line, loc[0]) {
+				findings = append(findings, newLexicalFinding("SKL-EXEC-014", target, lang, lineNum,
+					uint32(loc[0]+1), uint32(loc[1]+1), "", line))
+			}
 		}
 		if loc := exfilCmdRe.FindStringIndex(line); loc != nil && !negatedClause(line, loc[0]) {
 			cmd := line[loc[0]:loc[1]]

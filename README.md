@@ -110,13 +110,14 @@ repos:
 | `MD-PAD-003` | Medium | Extreme blank-line padding pushing content below the viewport |
 | `MD-HIDE-013` | High | A paragraph of agent directives ("the assistant must…") hidden in an HTML comment, even without commands or paths |
 | `AGT-SEC-004` | High | Instructions or tool descriptions that read, copy, send, or loosen permissions on credentials (`~/.ssh`, `.aws/credentials`, `claude_desktop_config.json`, ...) |
-| `AGT-HIDE-005` | High | Concealment and override directives: "do not tell the user", "ignore previous instructions", `<IMPORTANT>` blocks |
+| `AGT-HIDE-005` | High | Concealment and override directives: "do not tell the user", "keep the logs out of the reply", "silently run setup.py", "ignore previous instructions", `<IMPORTANT>` blocks |
 | `SKL-PERM-006` | Medium | Skill frontmatter auto-approving unrestricted `Bash`, `Bash(*)`, or `curl`/interpreters via `allowed-tools` |
 | `SKL-IMG-007` | High | Steps deferred to an image or diagram (multimodal hidden-instruction carrier) |
 | `SKL-CLZ-008` | High | Cloze blanks (`___1___`) whose answers live in a referenced image |
 | `SKL-SPLIT-009` | High | Shell block ending in a dangling `\|`, `&&`, or `\|\|`, so the real command is finished elsewhere |
 | `AGT-EXF-011` | Critical | `curl`/`wget`/`iwr`/`nc` sending command output, env, or files to a URL, or anything to a paste/webhook/tunnel host |
 | `SKL-LURE-012` | High | "Prerequisite" lures: password-protected archive downloads, or "copy and run the command from" a paste site |
+| `SKL-EXEC-014` | High | Privilege escalation or code-from-data in a skill: setuid `chmod`, writes to `/etc/sudoers` or `/etc/passwd`, `exec()` of fetched or decrypted content, `shell=True` with download or privilege commands |
 | `DEC-PAY-010` | Critical | base64 / hex / gzip / zlib blobs, nested up to 4 layers, that decode to commands or hidden instructions, and decode-and-exec one-liners inside strings (`python -c "exec(b64decode(...))"`) |
 | `PY-EXEC-001` | Critical | Decoded payload reaching `eval`/`exec`/`os.system`/`subprocess`, directly or via multi-hop taint |
 | `PY-OBF-002` | High | `chr()` concatenation feeding execution or `getattr`/`__import__` |
@@ -158,7 +159,7 @@ To score decloak on the held-out split of [MaliciousSkillBench](https://huggingf
 
 ### Other checks
 
-- Labeled corpus in `testdata/corpus` (59 malicious and benign fixtures, including benign lookalikes of each attack): **precision 1.000, recall 1.000**, enforced by `TestLabeledCorpus` in CI. This is a regression suite, not an accuracy estimate.
+- Labeled corpus in `testdata/corpus` (63 malicious and benign fixtures, including benign lookalikes of each attack): **precision 1.000, recall 1.000**, enforced by `TestLabeledCorpus` in CI. This is a regression suite, not an accuracy estimate.
 - [snyk-labs/toxicskills-goof](https://github.com/snyk-labs/toxicskills-goof), real ClawHub-style malicious skills: **4 of 4 flagged** (base64 installer, password-zip lure, paste-site exfiltration, ASCII smuggling).
 - Benign catalogs, 472 skills:
   - [anthropics/skills](https://github.com/anthropics/skills) (20 skills): **0 findings**.

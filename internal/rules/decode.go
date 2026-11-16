@@ -87,16 +87,24 @@ const inlineDecodeExecID = "DEC-PAY-010"
 
 const inlineDecodeExecMsg = "Decodes data and executes it in the same expression"
 
+// dropShadowedInlineExec also drops SKL-EXEC-014 on a line that a more
+// specific execution or decoded-payload finding already covers.
 func dropShadowedInlineExec(findings []model.Finding) []model.Finding {
-	astLines := map[uint32]bool{}
+	astLines, payLines := map[uint32]bool{}, map[uint32]bool{}
 	for _, f := range findings {
 		if strings.HasSuffix(f.RuleID, "-EXEC-001") {
 			astLines[f.StartLine] = true
+		}
+		if strings.HasSuffix(f.RuleID, "-EXEC-001") || f.RuleID == inlineDecodeExecID {
+			payLines[f.StartLine] = true
 		}
 	}
 	out := findings[:0]
 	for _, f := range findings {
 		if f.Message == inlineDecodeExecMsg && astLines[f.StartLine] {
+			continue
+		}
+		if f.RuleID == "SKL-EXEC-014" && payLines[f.StartLine] {
 			continue
 		}
 		out = append(out, f)
