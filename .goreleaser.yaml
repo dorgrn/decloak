@@ -7,8 +7,23 @@ before:
     - go mod tidy
 
 builds:
-  - main: ./cmd/decloak
+  - id: decloak
+    main: ./cmd/decloak
     binary: decloak
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X github.com/dorgrn/decloak/internal/version.Version={{.Version}}
+      - -X github.com/dorgrn/decloak/internal/version.Commit={{.ShortCommit}}
+      - -X github.com/dorgrn/decloak/internal/version.Date={{.Date}}
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+  - id: decloak-judge
+    main: ./cmd/decloak-judge
+    binary: decloak-judge
     env:
       - CGO_ENABLED=0
     flags:
@@ -22,7 +37,8 @@ builds:
     goarch: [amd64, arm64]
 
 archives:
-  - formats: [tar.gz]
+  - builds: [decloak, decloak-judge]
+    formats: [tar.gz]
     format_overrides:
       - goos: windows
         formats: [zip]

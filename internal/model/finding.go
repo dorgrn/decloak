@@ -91,25 +91,27 @@ type CodeBlockSlice struct {
 const (
 	CategoryConcealment = "concealment"
 	CategoryPolicy      = "policy"
+	CategoryJudge       = "judge"
 )
 
 // Finding represents a concrete security violation reported by an AST query or
 // lexical concealment detector.
 type Finding struct {
-	Category     string   `json:"category,omitempty"`
-	RuleID       string   `json:"rule_id"`
-	Severity     Severity `json:"-"`
-	SeverityName string   `json:"severity"`
-	Language     Language `json:"language"`
-	FilePath     string   `json:"file_path"`
-	SourceOrigin string   `json:"source_origin,omitempty"`
-	StartLine    uint32   `json:"start_line"`
-	EndLine      uint32   `json:"end_line"`
-	StartCol     uint32   `json:"start_col"`
-	EndCol       uint32   `json:"end_col"`
-	Message      string   `json:"message"`
-	Snippet      string   `json:"snippet"`
-	Remediation  string   `json:"remediation"`
+	Category     string            `json:"category,omitempty"`
+	RuleID       string            `json:"rule_id"`
+	Severity     Severity          `json:"-"`
+	SeverityName string            `json:"severity"`
+	Language     Language          `json:"language"`
+	FilePath     string            `json:"file_path"`
+	SourceOrigin string            `json:"source_origin,omitempty"`
+	StartLine    uint32            `json:"start_line"`
+	EndLine      uint32            `json:"end_line"`
+	StartCol     uint32            `json:"start_col"`
+	EndCol       uint32            `json:"end_col"`
+	Message      string            `json:"message"`
+	Snippet      string            `json:"snippet"`
+	Remediation  string            `json:"remediation"`
+	Details      map[string]string `json:"details,omitempty"`
 }
 
 // ShouldFail returns true if any finding meets or exceeds the configured threshold.

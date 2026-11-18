@@ -76,6 +76,39 @@ decloak scan ~/.claude/skills --policy
 Policy findings carry `"category": "policy"` in JSON output, so they can be
 triaged separately from concealment findings.
 
+### Semantic review with an LLM judge (optional, separate binary)
+
+Static rules are deliberately blind to intent written in plain, convincing prose.
+For that last mile, build the optional `decloak-judge` binary. It is separate on
+purpose: `decloak` itself still contains no network client and never sends
+anything anywhere.
+
+```bash
+make build-judge
+export DECLOAK_JUDGE_API_KEY=...        # or OPENAI_API_KEY
+./decloak-judge scan ~/.claude/skills --model gpt-5-mini
+```
+
+The judge sends files to an OpenAI-compatible chat-completions endpoint and asks
+for a structured verdict (`malicious`, `suspicious`, or `benign`) with severity,
+category, confidence, a reason, and quoted evidence. Static findings are included
+as hints unless you pass `--no-static`. Verdicts are emitted as normal findings
+with rule ID `LLM-JUDGE-001`, `"category": "judge"`, and a `details` object, so
+table, JSON, SARIF, `--fail-on`, and `--format` all work as usual.
+
+```bash
+# Local model through Ollama/vLLM/LiteLLM: no API key required.
+./decloak-judge scan . --base-url http://localhost:11434/v1 --model llama3.1
+
+# Judge the policy stream too and keep machine-readable output.
+./decloak-judge scan . --policy -f json > judge.json
+```
+
+What leaves your machine: only the files you point the judge at, sent to the
+endpoint you configure. The judge is advisory and can be wrong; it does not run
+code, and a judge error exits `2` rather than silently passing. Use it as a second
+reviewer, not as a replacement for the deterministic scan.
+
 ### Detect rug pulls
 
 Approve a set of skills and MCP scripts once, then fail if any of them changes silently:
@@ -160,6 +193,9 @@ repos:
 Policy checks are opt-in so the default run stays low-noise on benign skill
 catalogs.
 
+`LLM-JUDGE-001` is emitted only by the separate `decloak-judge` binary; it is not
+part of `decloak rules` and never runs inside the offline scanner.
+
 Code fences inside Markdown are parsed with the matching grammar and keep their original line numbers. MCP tool descriptions in Python and JavaScript docstrings and strings are checked by the instruction rules.
 
 `SKL-IMG-007`, `SKL-CLZ-008`, and `SKL-SPLIT-009` target the hidden-instruction techniques from [SkillCamo (NeurIPS 2026)](https://github.com/jiaxiaojunQAQ/SkillCamo), which bypassed existing skill scanners in 78-100% of cases by moving commands into images.
@@ -168,11 +204,11 @@ Code fences inside Markdown are parsed with the matching grammar and keep their 
 
 | | decloak | LLM / cloud scanners |
 |---|---|---|
-| Sends your files to a third party | **Never** | Usually (API or LLM provider) |
+| Sends your files to a third party | **Never** in `decloak`; optional separate judge | Usually (API or LLM provider) |
 | Executes MCP servers to inspect them | **Never** | Often |
-| API key or account | None | Required for full detection |
-| Deterministic, same result every run | Yes | No |
-| Install | One static binary | Python / Node / Docker |
+| API key or account | None for `decloak`; judge needs one unless using a local model | Required for full detection |
+| Deterministic, same result every run | Yes for `decloak`; judge is model-dependent | No |
+| Install | One static binary (judge is a second binary) | Python / Node / Docker |
 | Scans `AGENTS.md`, `CLAUDE.md`, rules files | Yes | Rarely |
 | Audits every agent installed on the machine in one command | Yes | Rarely |
 | Follows encoded payloads through code and nested encodings | Yes | Rarely |
@@ -189,7 +225,7 @@ decloak contains no HTTP client, no TLS, and no way to run a subprocess. This is
 
 ### MaliciousSkillBench
 
-To score decloak on the held-out split of [MaliciousSkillBench](https://huggingface.co/datasets/ProtectSkills/MaliciousSkillBench), run `make bench-msb` (needs `uv`; downloads a pinned dataset revision into `.bench/`). Most malicious skills in that benchmark are harmful instructions in plain prose with nothing hidden, so expect low recall without `--policy`: decloak's default rules find concealed content, not plain-sight intent. On the `source_disjoint` test split, the default rules reach **3.9% recall at 2.6% FPR** (HIGH+), while `--policy` reaches **36.7% recall at 3.3% FPR** (HIGH+; 37.2%/7.2% at LOW+). On the validation split, `--policy` reaches **32.1% recall at 1.2% FPR** (HIGH+; 40.2%/3.6% at LOW+). These are measured against a held-out split and are not tuned on it; treat them as directional.
+To score decloak on the held-out split of [MaliciousSkillBench](https://huggingface.co/datasets/ProtectSkills/MaliciousSkillBench), run `make bench-msb` (needs `uv`; downloads a pinned dataset revision into `.bench/`). Most malicious skills in that benchmark are harmful instructions in plain prose with nothing hidden, so expect low recall without `--policy`: decloak's default rules find concealed content, not plain-sight intent. On the `source_disjoint` test split, the default rules reach **3.9% recall at 2.6% FPR** (HIGH+), while `--policy` reaches **36.7% recall at 3.3% FPR** (HIGH+; 37.2%/7.2% at LOW+). On the validation split, `--policy` reaches **36.3% recall at 1.2% FPR** (HIGH+; 44.4%/3.6% at LOW+). These are measured against a held-out split and are not tuned on it; treat them as directional.
 
 ### Other checks
 

@@ -155,3 +155,17 @@ func TestNewReporterRejectsUnknownFormat(t *testing.T) {
 		t.Fatal("expected error for unsupported format")
 	}
 }
+
+func TestNewReporterAsNamesCompanionTool(t *testing.T) {
+	var buf bytes.Buffer
+	r, err := NewReporterAs("decloak-judge", "json", &buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Write(sampleFindings()); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), `"tool": "decloak-judge"`) {
+		t.Errorf("expected companion tool name in:\n%s", buf.String())
+	}
+}

@@ -9,7 +9,8 @@ import (
 )
 
 type SARIFReporter struct {
-	w io.Writer
+	w    io.Writer
+	tool string
 }
 
 type sarifLog struct {
@@ -108,6 +109,10 @@ func (sr *SARIFReporter) Write(findings []model.Finding) error {
 		})
 	}
 
+	toolName := sr.tool
+	if toolName == "" {
+		toolName = "decloak"
+	}
 	log := sarifLog{
 		Version: "2.1.0",
 		Schema:  "https://json.schemastore.org/sarif-2.1.0.json",
@@ -115,7 +120,7 @@ func (sr *SARIFReporter) Write(findings []model.Finding) error {
 			{
 				Tool: sarifTool{
 					Driver: sarifDriver{
-						Name:           "decloak",
+						Name:           toolName,
 						InformationURI: "https://github.com/dorgrn/decloak",
 						Version:        version.Version,
 						Rules:          rules,

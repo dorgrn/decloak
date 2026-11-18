@@ -9,7 +9,8 @@ import (
 )
 
 type JSONReporter struct {
-	w io.Writer
+	w    io.Writer
+	tool string
 }
 
 type jsonReportEnvelope struct {
@@ -23,8 +24,12 @@ func (jr *JSONReporter) Write(findings []model.Finding) error {
 	if findings == nil {
 		findings = []model.Finding{}
 	}
+	tool := jr.tool
+	if tool == "" {
+		tool = "decloak"
+	}
 	env := jsonReportEnvelope{
-		Tool:     "decloak",
+		Tool:     tool,
 		Version:  version.Version,
 		Total:    len(findings),
 		Findings: findings,
