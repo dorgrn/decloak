@@ -19,6 +19,9 @@ type EngineConfig struct {
 	Workers       int
 	MaxBlankLines int
 	Verbose       bool
+	// Policy enables the capability/policy layer (POL-* rules): visible but
+	// dangerous behavior rather than concealed content.
+	Policy bool
 }
 
 const slowFileThreshold = 2 * time.Second
@@ -147,6 +150,9 @@ func (e *Engine) scanSource(wp *parser.WorkerParsers, target model.TargetFile, s
 		}
 		findings = append(findings, InspectInstructionText(target, target.Language, src)...)
 		findings = append(findings, InspectDecodedPayloads(target, target.Language, src)...)
+		if e.cfg.Policy {
+			findings = append(findings, InspectPolicy(target, target.Language, src)...)
+		}
 		return dedupeFindings(dropShadowedInlineExec(findings)), nil
 	}
 
@@ -199,6 +205,10 @@ func (e *Engine) scanSource(wp *parser.WorkerParsers, target model.TargetFile, s
 				findings = append(findings, subFindings...)
 			}
 		}
+	}
+
+	if e.cfg.Policy {
+		findings = append(findings, InspectPolicy(target, target.Language, src)...)
 	}
 
 	return dedupeFindings(dropShadowedInlineExec(findings)), nil

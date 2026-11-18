@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"strings"
 	"syscall"
 
 	"github.com/dorgrn/decloak/internal/lock"
@@ -28,6 +29,7 @@ type ScanOptions struct {
 	ResolveMCP    bool
 	Verbose       bool
 	StdinPaths    bool
+	Policy        bool
 }
 
 const exitFindings = 1
@@ -168,7 +170,11 @@ directory, then scans them. Everything stays on this machine.`,
 				return err
 			}
 			for _, r := range reg.Rules() {
-				fmt.Printf("%-14s [%-8s] (%s) %s\n", r.ID, r.Severity, r.Language, r.Description)
+				suffix := ""
+				if strings.HasPrefix(r.ID, "POL-") {
+					suffix = " [opt-in: --policy]"
+				}
+				fmt.Printf("%-14s [%-8s] (%s) %s%s\n", r.ID, r.Severity, r.Language, r.Description, suffix)
 			}
 			return nil
 		},
@@ -197,6 +203,7 @@ func addScanFlags(cmd *cobra.Command, opts *ScanOptions) {
 	cmd.Flags().IntVarP(&opts.Workers, "workers", "w", runtime.NumCPU(), "Number of concurrent worker goroutines")
 	cmd.Flags().BoolVar(&opts.ResolveMCP, "resolve-mcp", true, "Scan local server scripts referenced by MCP configs")
 	cmd.Flags().BoolVarP(&opts.Verbose, "verbose", "v", false, "Verbose diagnostics on stderr")
+	cmd.Flags().BoolVar(&opts.Policy, "policy", false, "Enable the capability/policy layer (POL-* rules): visible dangerous behavior, not just concealed content")
 }
 
 func defaultPaths(args []string) []string {
@@ -255,6 +262,7 @@ func scanPaths(opts *ScanOptions, paths []string) ([]model.Finding, error) {
 		Workers:       opts.Workers,
 		MaxBlankLines: opts.MaxBlankLines,
 		Verbose:       opts.Verbose,
+		Policy:        opts.Policy,
 	})
 	findings, err := engine.Run(context.Background(), targets)
 	if err != nil {

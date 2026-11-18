@@ -53,15 +53,19 @@ def main():
     ap.add_argument("--bin", default=os.path.join(ROOT, "decloak"))
     ap.add_argument("--split", default="source_disjoint")
     ap.add_argument("--part", default="test", choices=["train", "validation", "test"])
+    ap.add_argument("--policy", action="store_true", help="enable decloak's --policy rule stream")
+    ap.add_argument("--breakdown", action="store_true", help="break HIGH+ recall down by source and category")
     ap.add_argument("--json", action="store_true", help="print the full report as JSON")
     args = ap.parse_args()
 
     fetch()
     split = pq.read_table(os.path.join(CACHE, "splits", f"{args.split}.parquet")).to_pylist()
     ids = {r["benchmark_id"] for r in split if r["split"] == args.part}
+    cols = ["benchmark_id", "label", "skill_text", "public_skill_text"]
+    if args.breakdown:
+        cols += ["source_name", "provenance", "evidence_type", "attack_categories"]
     rows = {r["benchmark_id"]: r for r in pq.read_table(
-        os.path.join(CACHE, "primary.parquet"),
-        columns=["benchmark_id", "label", "skill_text", "public_skill_text"]).to_pylist() if r["benchmark_id"] in ids}
+        os.path.join(CACHE, "primary.parquet"), columns=cols).to_pylist() if r["benchmark_id"] in ids}
 
     work = os.path.join(CACHE, "work", f"{args.split}-{args.part}")
     shutil.rmtree(work, ignore_errors=True)
@@ -70,7 +74,8 @@ def main():
         with open(os.path.join(work, bid, "SKILL.md"), "w", encoding="utf-8") as f:
             f.write(r["skill_text"] or r["public_skill_text"] or "")
 
-    out = subprocess.run([args.bin, "scan", work, "--fail-on", "low", "-f", "json"],
+    extra = ["--policy"] if args.policy else []
+    out = subprocess.run([args.bin, "scan", work, "--fail-on", "low", "-f", "json", *extra],
                          capture_output=True, text=True, check=False)
     if out.returncode not in (0, 1):
         raise SystemExit(f"decloak failed ({out.returncode}): {out.stderr}")
@@ -94,6 +99,26 @@ def main():
         f1 = 2 * prec * rec / (prec + rec) if prec + rec else 0.0
         report["thresholds"][name] = {"tp": tp, "fp": fp, "recall": rec, "fpr": fpr, "precision": prec, "f1": f1}
         print(f"{name:10} {rec:7.1%} {fpr:6.1%} {prec:9.1%} {f1:6.1%}")
+    if args.breakdown:
+        high = 3
+        groups = {"source_name": collections.defaultdict(list), "evidence_type": collections.defaultdict(list),
+                  "provenance": collections.defaultdict(list)}
+        for bid, r in rows.items():
+            for key, acc in groups.items():
+                acc[(r.get(key) or "unknown", int(r["label"]))].append(worst[bid] >= high)
+        report["breakdown"] = {}
+        for key, acc in groups.items():
+            names = sorted({n for n, _ in acc})
+            print(f"\n{key} (HIGH+):")
+            print(f"  {'group':40} {'mal n':>6} {'recall':>7} {'ben n':>6} {'FPR':>6}")
+            report["breakdown"][key] = {}
+            for name in names:
+                m = acc.get((name, 1), [])
+                b = acc.get((name, 0), [])
+                rec = sum(m) / len(m) if m else 0.0
+                fpr = sum(b) / len(b) if b else 0.0
+                report["breakdown"][key][name] = {"mal": len(m), "recall": rec, "ben": len(b), "fpr": fpr}
+                print(f"  {name[:40]:40} {len(m):6d} {rec:7.1%} {len(b):6d} {fpr:6.1%}")
     if args.json:
         print(json.dumps(report, indent=1))
 

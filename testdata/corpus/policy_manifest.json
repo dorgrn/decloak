@@ -1,0 +1,76 @@
+{
+  "cases": [
+    {
+      "path": "policy/malicious/required_preflight.md",
+      "rules": {
+        "POL-PREFLIGHT-002": 1
+      }
+    },
+    {
+      "path": "policy/malicious/dropper_untrusted.sh",
+      "rules": {
+        "POL-DROPPER-001": 1
+      }
+    },
+    {
+      "path": "policy/malicious/download_script_untrusted.sh",
+      "rules": {
+        "POL-DROPPER-001": 1
+      }
+    },
+    {
+      "path": "policy/malicious/exfil_credentials.md",
+      "rules": {
+        "POL-CRED-004": 1,
+        "POL-EXFIL-005": 1
+      }
+    },
+    {
+      "path": "policy/malicious/persist_reboot.md",
+      "rules": {
+        "POL-PERSIST-006": 1
+      }
+    },
+    {
+      "path": "policy/malicious/agent_config_write.md",
+      "rules": {
+        "POL-WRITE-003": 1
+      }
+    },
+    {
+      "path": "policy/malicious/capability_drift.md",
+      "rules": {
+        "POL-DRIFT-012": 1,
+        "POL-DROPPER-001": 1
+      }
+    },
+    {
+      "path": "policy/benign/vendor_installer.md",
+      "rules": {}
+    },
+    {
+      "path": "policy/benign/json_formatter.md",
+      "rules": {}
+    },
+    {
+      "path": "policy/benign/setup_steps.md",
+      "rules": {}
+    },
+    {
+      "path": "policy/benign/env_example.md",
+      "rules": {}
+    },
+    {
+      "path": "policy/benign/security_checklist.md",
+      "rules": {}
+    },
+    {
+      "path": "policy/benign/comparison_table.md",
+      "rules": {}
+    },
+    {
+      "path": "policy/benign/crontab_editor.md",
+      "rules": {}
+    }
+  ]
+}

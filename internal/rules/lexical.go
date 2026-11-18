@@ -136,13 +136,59 @@ func newLexicalFinding(ruleID string, target model.TargetFile, lang model.Langua
 }
 
 var (
-	// Credential file path patterns, not credentials.
-	// Public keys (id_*.pub) and ~/.ssh/config hold no secrets; the lookahead keeps them out.
-	secretPath = `(~/\.ssh/(id_\w+|authorized_keys)\b(?:[^.]|$)|~/\.ssh/?(?:[^/\w.]|\*|$)|\bid_(rsa|ed25519|ecdsa|dsa)\b(?:[^.]|$)|\.aws/credentials|~/\.netrc\b|\.kube/config|\.docker/config\.json|\.git-credentials|~/\.npmrc\b|~/\.pypirc\b|claude_desktop_config\.json|~/\.claude\.json|~/\.cursor/mcp\.json|/etc/shadow|\bwallet\.dat\b)` //nolint:gosec // G101: path patterns, not credentials
+	// Home-relative asset paths. Skills run on Linux, macOS, and Windows hosts,
+	// so accept ~, $HOME, /root, and /home/<user> interchangeably.
+	homePrefix = `(?:~|\$\{?HOME\}?|/root|/home/[^/\s"'` + "`" + `]+)`
+
+	// privateKeyPath matches SSH private key files. The trailing guard keeps
+	// public keys (id_*.pub) out; Go's regexp has no lookahead.
+	privateKeyPath = `\bid_(rsa|ed25519|ecdsa|dsa)\b(?:[^.]|$)`
+
+	// credentialFilePaths matches credential-bearing files and directories,
+	// excluding public material (id_*.pub, authorized_keys, known_hosts). The
+	// concealment and policy layers share it so the two cannot drift apart.
+	credentialFilePaths = `(` +
+		homePrefix + `/?\.ssh/?(?:[^/\w.]|\*|$)` +
+		`|` + homePrefix + `/?\.ssh/` + privateKeyPath +
+		`|` + privateKeyPath +
+		`|` + homePrefix + `/?\.(aws/credentials|netrc|pgpass|git-credentials|npmrc|pypirc|bash_history|zsh_history)\b` +
+		`|` + homePrefix + `/?\.(docker/config\.json|kube/config)\b` +
+		`|` + homePrefix + `/?\.config/(gcloud/[^\s"'` + "`" + `]*credentials[^\s"'` + "`" + `]*|gh/hosts\.yml)` +
+		`|` + homePrefix + `/?\.(ethereum/keystore|electrum/wallets)\b` +
+		`|(?:~/|/root/)?Library/Keychains/[^\s"'` + "`" + `]+` +
+		`|(?:~/|/root/)?Library/Application Support/[^\n]{0,80}\b(Cookies|Login Data)\b` +
+		`|\b(browser|chrome|chromium|edge|brave|firefox|profile)\b[^\n]{0,40}\bLogin Data\b|\bCookies\.sqlite\b` +
+		`|/etc/(shadow|gshadow|sudoers)` +
+		`|claude_desktop_config\.json|~/\.claude\.json|~/\.cursor/mcp\.json|` +
+		`\bwallet\.dat\b` +
+		`)` //nolint:gosec // G101: path patterns, not credentials
+
+	// authorized_keys is public, but the concealment layer still treats reading
+	// or rewriting it as sensitive.
+	secretPath = `(` + credentialFilePaths +
+		`|` + homePrefix + `/?\.ssh/authorized_keys\b(?:[^.]|$)` +
+		`)`
+
+	secretPathRe = regexp.MustCompile(`(?i)` + secretPath)
+
+	secretVerb = `(read|cat|send|upload|post|pass|include|attach|embed|forward|exfiltrate|transmit|paste|dump|grab|collect|export|print|copy|contents?\s+of|cp|scp|rsync|base64|zip|tar)`
+
+	// Loosening permissions on a secret (chmod 644 id_rsa, chmod o+r); chmod
+	// 600/400 tightens and is fine.
+	chmodLoosen   = `\bchmod\s+(-R\s+)?(0?[0-7][4-7][0-7]|0?[0-7][0-7][4-7]|[ugoa]*[go][ugoa]*\+[rwx]+)\s+[^;\n|&]{0,40}?` + secretPath
+	chmodLoosenRe = regexp.MustCompile(`(?i)` + chmodLoosen)
+
 	// Verb then secret path within one clause: "read ~/.ssh/id_rsa", "cat ~/.aws/credentials and send".
-	secretActionRe = regexp.MustCompile(`(?i)\b(read|cat|send|upload|post|pass|include|attach|embed|forward|exfiltrate|transmit|paste|contents?\s+of|cp|scp|rsync)\b[^.;\n]{0,40}?` + secretPath +
-		// Loosening permissions on a secret (chmod 644 id_rsa, chmod o+r); chmod 600/400 tightens and is fine.
-		`|\bchmod\s+(-R\s+)?(0?[0-7][4-7][0-7]|0?[0-7][0-7][4-7]|[ugoa]*[go][ugoa]*\+[rwx]+)\s+[^;\n|&]{0,40}?` + secretPath)
+	secretActionRe = regexp.MustCompile(`(?i)\b` + secretVerb + `\b[^.;\n]{0,40}?` + secretPath + `|` + chmodLoosen)
+
+	// Passive phrasing: the asset comes first ("the contents of ~/.ssh are
+	// uploaded", "everything under ~/.ssh gets sent").
+	secretPassiveRe = regexp.MustCompile(`(?i)` + secretPath + `[^.;\n]{0,60}?\b(is|are|was|were|gets?|got)\b[^.;\n]{0,30}?\b(sent|uploaded|exfiltrated|transmitted|read|included|copied|posted|forwarded|embedded|attached|shipped)\b`)
+
+	// Passive phrasing puts the negation between the asset and the action
+	// ("~/.ssh is never sent"), so the matched span must be inspected too.
+	passiveNegationRe = regexp.MustCompile(`(?i)\b(not|never|no longer|isn't|aren't|wasn't|weren't|doesn't|don't|won't|cannot|can't)\b`)
+
 	negationRe = regexp.MustCompile(`(?i)\b(never|don't|do not|must not|should not|shouldn't|can't|cannot|unable|avoid|deny|denied|block|blocked|forbid|forbidden|prohibit|sandbox|sandboxed|could|would|might|environment where)`)
 
 	hideRe = regexp.MustCompile(`(?i)(\b(do not|don't|never)\s+(tell|telling|inform|informing|notify|notifying|mention|mentioning|reveal|revealing|alert|alerting|disclose|disclosing)\s+((this|it|that|these|them|anything|any of this)(\s+step)?\s+(to\s+)?)?(the\s+)?(user|human|operator|anyone)\b(\s+(about|of)\s+(this|it|these))?\s*(\.|$|,|;|\))` +
@@ -245,7 +291,18 @@ func InspectInstructionText(target model.TargetFile, lang model.Language, src []
 					uint32(loc[0]+1), uint32(loc[1]+1), "", cmd))
 			}
 		}
-		if loc := secretActionRe.FindStringIndex(line); loc != nil && !negatedClause(line, loc[0]) &&
+		loc := secretActionRe.FindStringIndex(line)
+		if passiveLoc := secretPassiveRe.FindStringIndex(line); passiveLoc != nil {
+			if passiveNegationRe.MatchString(line[passiveLoc[0]:passiveLoc[1]]) {
+				// "~/.ssh is never sent" describes non-transmission, so neither
+				// the passive nor a weak active match ("contents of ...") is
+				// evidence of exfiltration.
+				loc = nil
+			} else {
+				loc = passiveLoc
+			}
+		}
+		if loc != nil && !negatedClause(line, loc[0]) &&
 			!isQuotedExample(line, loc) && !isCommentOnlyCommand(line) {
 			findings = append(findings, newLexicalFinding("AGT-SEC-004", target, lang, lineNum,
 				uint32(loc[0]+1), uint32(loc[1]+1), "", line))

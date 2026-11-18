@@ -154,9 +154,10 @@ func NewDefaultRegistry() (*Registry, error) {
 
 // Rules returns all compiled AST rules plus metadata for built-in lexical rules.
 func (r *Registry) Rules() []CompiledRule {
-	out := make([]CompiledRule, 0, len(r.all)+len(lexicalRules))
+	out := make([]CompiledRule, 0, len(r.all)+len(lexicalRules)+len(policyRules))
 	out = append(out, r.all...)
 	out = append(out, lexicalRules...)
+	out = append(out, policyRules...)
 	return out
 }
 

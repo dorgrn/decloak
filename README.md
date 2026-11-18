@@ -62,6 +62,20 @@ decloak scan . --format sarif > decloak.sarif
 git diff --name-only origin/main... | decloak scan --stdin-paths
 ```
 
+### Enable capability policy checks
+
+The default rules find *concealed* content. Add `--policy` to also flag plain-sight
+capability abuse: coerced preflight helpers, droppers, credential access paired
+with egress, persistence, agent-config tampering, privilege escalation, and
+capability drift between declared and observed tools.
+
+```bash
+decloak scan ~/.claude/skills --policy
+```
+
+Policy findings carry `"category": "policy"` in JSON output, so they can be
+triaged separately from concealment findings.
+
 ### Detect rug pulls
 
 Approve a set of skills and MCP scripts once, then fail if any of them changes silently:
@@ -126,6 +140,26 @@ repos:
 | `SH-DL-001` | Critical | `curl`/`wget` output piped or `source <(...)`-substituted into a shell |
 | `PS-EXEC-001` | Critical | `iex`/`Invoke-Expression`/`-EncodedCommand` receiving encoded, compressed, or downloaded payloads |
 
+### Policy rules (`--policy`)
+
+| ID | Severity | Detects |
+|----|----------|---------|
+| `POL-DROPPER-001` | Critical | Downloads executable code from an untrusted host, pipes a download into an interpreter, or executes a just-downloaded file |
+| `POL-PREFLIGHT-002` | High | Coerced "run this helper first" preflight/bootstrap script before the documented task |
+| `POL-WRITE-003` | High | Writes to system, credential, agent-config, or memory state (`authorized_keys`, shell rc, agent settings, `AGENTS.md`) |
+| `POL-CRED-004` | Critical | Reads or collects credential files and secret environment variables |
+| `POL-EXFIL-005` | Critical | Credential/secret access near an external POST, webhook, or tunnel upload |
+| `POL-PERSIST-006` | High | Restart persistence (`@reboot`, cron installs, LaunchAgents/Daemons, git hooks, scheduled tasks) |
+| `POL-SUPPLY-007` | High | Dependency source pinning to non-official registries or path overrides |
+| `POL-INTEG-008` | High | Hides failures, errors, or diffs from the user |
+| `POL-REFUSE-009` | Medium | Instructions to suppress warnings, disclaimers, or safety commentary |
+| `POL-PRIV-010` | High | Privilege escalation or sandbox/permission bypass |
+| `POL-ABUSE-011` | Medium | Resource abuse: miners, fork bombs, bulk scraping, unbounded parallelism |
+| `POL-DRIFT-012` | High | Frontmatter `allowed-tools` is read-only but the body executes code or touches credentials |
+
+Policy checks are opt-in so the default run stays low-noise on benign skill
+catalogs.
+
 Code fences inside Markdown are parsed with the matching grammar and keep their original line numbers. MCP tool descriptions in Python and JavaScript docstrings and strings are checked by the instruction rules.
 
 `SKL-IMG-007`, `SKL-CLZ-008`, and `SKL-SPLIT-009` target the hidden-instruction techniques from [SkillCamo (NeurIPS 2026)](https://github.com/jiaxiaojunQAQ/SkillCamo), which bypassed existing skill scanners in 78-100% of cases by moving commands into images.
@@ -155,11 +189,11 @@ decloak contains no HTTP client, no TLS, and no way to run a subprocess. This is
 
 ### MaliciousSkillBench
 
-To score decloak on the held-out split of [MaliciousSkillBench](https://huggingface.co/datasets/ProtectSkills/MaliciousSkillBench), run `make bench-msb` (needs `uv`; downloads a pinned dataset revision into `.bench/`). Most malicious skills in that benchmark are harmful instructions in plain prose with nothing hidden, so expect low recall there: decloak finds concealed content, not plain-sight intent.
+To score decloak on the held-out split of [MaliciousSkillBench](https://huggingface.co/datasets/ProtectSkills/MaliciousSkillBench), run `make bench-msb` (needs `uv`; downloads a pinned dataset revision into `.bench/`). Most malicious skills in that benchmark are harmful instructions in plain prose with nothing hidden, so expect low recall without `--policy`: decloak's default rules find concealed content, not plain-sight intent. On the `source_disjoint` test split, the default rules reach **3.9% recall at 2.6% FPR** (HIGH+), while `--policy` reaches **36.7% recall at 3.3% FPR** (HIGH+; 37.2%/7.2% at LOW+). On the validation split, `--policy` reaches **32.1% recall at 1.2% FPR** (HIGH+; 40.2%/3.6% at LOW+). These are measured against a held-out split and are not tuned on it; treat them as directional.
 
 ### Other checks
 
-- Labeled corpus in `testdata/corpus` (63 malicious and benign fixtures, including benign lookalikes of each attack): **precision 1.000, recall 1.000**, enforced by `TestLabeledCorpus` in CI. This is a regression suite, not an accuracy estimate.
+- Labeled corpus in `testdata/corpus` (63 concealment fixtures, including benign lookalikes of each attack): **precision 1.000, recall 1.000**, enforced by `TestLabeledCorpus` in CI. Policy rules have their own fixtures and `TestPolicyCorpus`. These are regression suites, not accuracy estimates.
 - [snyk-labs/toxicskills-goof](https://github.com/snyk-labs/toxicskills-goof), real ClawHub-style malicious skills: **4 of 4 flagged** (base64 installer, password-zip lure, paste-site exfiltration, ASCII smuggling).
 - Benign catalogs, 472 skills:
   - [anthropics/skills](https://github.com/anthropics/skills) (20 skills): **0 findings**.

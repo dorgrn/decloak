@@ -85,9 +85,18 @@ type CodeBlockSlice struct {
 	BaseLineOffset uint32 // 0-based line number in parent Markdown where code content starts
 }
 
+// Finding categories split concealment findings (content hidden from reviewers)
+// from policy findings (visible but dangerous capabilities). They are scored
+// separately so enabling policy checks does not dilute the concealment signal.
+const (
+	CategoryConcealment = "concealment"
+	CategoryPolicy      = "policy"
+)
+
 // Finding represents a concrete security violation reported by an AST query or
 // lexical concealment detector.
 type Finding struct {
+	Category     string   `json:"category,omitempty"`
 	RuleID       string   `json:"rule_id"`
 	Severity     Severity `json:"-"`
 	SeverityName string   `json:"severity"`
