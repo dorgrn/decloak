@@ -8,8 +8,10 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"sort"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -29,12 +31,16 @@ type options struct {
 	baseURL       string
 	apiKey        string
 	model         string
+	provider      string
 	format        string
 	failOn        string
 	workers       int
 	timeout       time.Duration
 	maxInputRunes int
+	maxOutput     int
 	maxFileSizeMB int64
+	cacheDir      string
+	noCache       bool
 	policy        bool
 	noStatic      bool
 	verbose       bool
@@ -50,14 +56,17 @@ model and asks it to judge intent that static rules cannot see. It is a separate
 binary so decloak itself stays completely offline.
 
 The judge is advisory: it can be wrong, and it never replaces the deterministic
-scan. File contents leave this machine and go to the configured endpoint.`,
+scan. File contents leave this machine and go to the configured endpoint.
+
+Use --provider opencode for OpenCode Zen (DeepSeek V4.1 Flash free by default),
+or --base-url/--model for any other OpenAI-compatible endpoint.`,
 		SilenceUsage: true,
 	}
 
 	scanCmd := &cobra.Command{
 		Use:   "scan [path...]",
 		Short: "Judge files or directories with an LLM (default: current directory)",
-		Example: `  decloak-judge scan ~/.claude/skills --model gpt-5-mini
+		Example: `  decloak-judge scan ~/.claude/skills --provider opencode
   decloak-judge scan . --base-url http://localhost:11434/v1 --model llama3.1`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			paths := args
@@ -82,10 +91,12 @@ scan. File contents leave this machine and go to the configured endpoint.`,
 }
 
 func addJudgeFlags(cmd *cobra.Command, o *options) {
+	cmd.Flags().StringVar(&o.provider, "provider", envOr("DECLOAK_JUDGE_PROVIDER", "openai"),
+		"Provider preset: openai or opencode (opencode defaults to DeepSeek V4.1 Flash free)")
 	cmd.Flags().StringVar(&o.baseURL, "base-url", envOr("DECLOAK_JUDGE_BASE_URL", ""),
 		"OpenAI-compatible API base URL (default https://api.openai.com/v1)")
-	cmd.Flags().StringVar(&o.apiKey, "api-key", envOr("DECLOAK_JUDGE_API_KEY", os.Getenv("OPENAI_API_KEY")),
-		"API key (or DECLOAK_JUDGE_API_KEY / OPENAI_API_KEY)")
+	cmd.Flags().StringVar(&o.apiKey, "api-key", envOr("DECLOAK_JUDGE_API_KEY", firstNonEmpty(os.Getenv("OPENCODE_API_KEY"), os.Getenv("OPENAI_API_KEY"))),
+		"API key (or DECLOAK_JUDGE_API_KEY / OPENCODE_API_KEY / OPENAI_API_KEY)")
 	cmd.Flags().StringVar(&o.model, "model", envOr("DECLOAK_JUDGE_MODEL", ""),
 		"Judge model name (or DECLOAK_JUDGE_MODEL)")
 	cmd.Flags().StringVarP(&o.format, "format", "f", "table", "Output format: table, json, or sarif")
@@ -93,7 +104,11 @@ func addJudgeFlags(cmd *cobra.Command, o *options) {
 	cmd.Flags().IntVarP(&o.workers, "workers", "w", 4, "Concurrent judge requests")
 	cmd.Flags().DurationVar(&o.timeout, "timeout", 90*time.Second, "Per-request timeout")
 	cmd.Flags().IntVar(&o.maxInputRunes, "max-input-chars", 120000, "Maximum characters of file content sent to the judge")
+	cmd.Flags().IntVar(&o.maxOutput, "max-output-tokens", 1024, "Maximum tokens in the judge's answer")
 	cmd.Flags().Int64Var(&o.maxFileSizeMB, "max-file-size-mb", 10, "Maximum file size in MB to scan")
+	cmd.Flags().StringVar(&o.cacheDir, "cache-dir", envOr("DECLOAK_JUDGE_CACHE_DIR", defaultCacheDir()),
+		"Directory for cached verdicts (or DECLOAK_JUDGE_CACHE_DIR)")
+	cmd.Flags().BoolVar(&o.noCache, "no-cache", false, "Disable the verdict cache")
 	cmd.Flags().BoolVar(&o.policy, "policy", false, "Include policy-rule hints in the judge prompt")
 	cmd.Flags().BoolVar(&o.noStatic, "no-static", false, "Do not include static findings as hints")
 	cmd.Flags().BoolVarP(&o.verbose, "verbose", "v", false, "Print per-file verdicts and token usage to stderr")
@@ -106,24 +121,75 @@ func envOr(key, fallback string) string {
 	return fallback
 }
 
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+func defaultCacheDir() string {
+	dir, err := os.UserCacheDir()
+	if err != nil || dir == "" {
+		return ""
+	}
+	return filepath.Join(dir, "decloak", "judge")
+}
+
+func applyProvider(opts *options) error {
+	switch strings.ToLower(strings.TrimSpace(opts.provider)) {
+	case "", "openai":
+		return nil
+	case "opencode":
+		if opts.baseURL == "" {
+			opts.baseURL = judge.OpenCodeBaseURL
+		}
+		if opts.model == "" {
+			opts.model = judge.OpenCodeDefaultModel
+		}
+		if opts.apiKey == "" {
+			opts.apiKey = os.Getenv("OPENCODE_API_KEY")
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported provider %q: expected openai or opencode", opts.provider)
+	}
+}
+
 func runScan(opts *options, paths []string) error {
 	if _, err := model.ParseSeverity(opts.failOn); err != nil {
+		return err
+	}
+	if err := applyProvider(opts); err != nil {
 		return err
 	}
 	if opts.workers <= 0 {
 		opts.workers = runtime.NumCPU()
 	}
+	cacheDir := opts.cacheDir
+	if opts.noCache {
+		cacheDir = ""
+	}
 	client, err := judge.NewClient(judge.Config{
-		BaseURL:       opts.baseURL,
-		APIKey:        opts.apiKey,
-		Model:         opts.model,
-		Timeout:       opts.timeout,
-		MaxInputRunes: opts.maxInputRunes,
+		BaseURL:         opts.baseURL,
+		APIKey:          opts.apiKey,
+		Model:           opts.model,
+		Timeout:         opts.timeout,
+		MaxInputRunes:   opts.maxInputRunes,
+		MaxOutputTokens: opts.maxOutput,
+		CacheDir:        cacheDir,
 	})
 	if err != nil {
 		return err
 	}
 	fmt.Fprintf(os.Stderr, "Judge: %s at %s\n", client.Model(), client.Endpoint())
+	if cacheDir != "" {
+		fmt.Fprintf(os.Stderr, "Cache: %s\n", cacheDir)
+	} else {
+		fmt.Fprintln(os.Stderr, "Cache: disabled")
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -173,8 +239,8 @@ func runScan(opts *options, paths []string) error {
 		return fmt.Errorf("write report: %w", err)
 	}
 
-	fmt.Fprintf(os.Stderr, "\nJudged %d files: %d malicious, %d suspicious, %d benign, %d errors\n",
-		len(targets), counts.malicious, counts.suspicious, counts.benign, len(errs))
+	fmt.Fprintf(os.Stderr, "\nJudged %d files: %d malicious, %d suspicious, %d benign, %d cached, %d errors\n",
+		len(targets), counts.malicious, counts.suspicious, counts.benign, counts.cached, len(errs))
 	if len(errs) > 0 {
 		for _, e := range errs {
 			fmt.Fprintf(os.Stderr, "  %v\n", e)
@@ -193,11 +259,13 @@ type counts struct {
 	malicious  int
 	suspicious int
 	benign     int
+	cached     int
 }
 
 type outcome struct {
 	finding *model.Finding
 	verdict string
+	cached  bool
 	err     error
 }
 
@@ -231,10 +299,15 @@ func analyzeAll(ctx context.Context, client *judge.Client, targets []model.Targe
 			}
 			if opts.verbose {
 				stderrMu.Lock()
-				fmt.Fprintf(os.Stderr, "  %-12s %s (tokens %d)\n", verdict.Verdict, target.Path, usage.TotalTokens)
+				if usage.Cached {
+					fmt.Fprintf(os.Stderr, "  %-12s %s (cached)\n", verdict.Verdict, target.Path)
+				} else {
+					fmt.Fprintf(os.Stderr, "  %-12s %s (tokens %d)\n", verdict.Verdict, target.Path, usage.TotalTokens)
+				}
 				stderrMu.Unlock()
 			}
 			results[i].verdict = verdict.Verdict
+			results[i].cached = usage.Cached
 			if f, ok := judge.ToFinding(target, verdict, client.Model()); ok {
 				results[i].finding = &f
 			}
@@ -257,6 +330,9 @@ func analyzeAll(ctx context.Context, client *judge.Client, targets []model.Targe
 			c.suspicious++
 		default:
 			c.benign++
+		}
+		if r.cached {
+			c.cached++
 		}
 		if r.finding != nil {
 			findings = append(findings, *r.finding)

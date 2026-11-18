@@ -7,10 +7,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -21,6 +23,13 @@ import (
 const RuleID = "LLM-JUDGE-001"
 
 const defaultBaseURL = "https://api.openai.com/v1"
+
+// OpenCodeBaseURL is the OpenAI-compatible endpoint served by OpenCode Zen.
+const OpenCodeBaseURL = "https://opencode.ai/inference/openai/v1"
+
+// OpenCodeDefaultModel is the free model used when --provider opencode is
+// selected without an explicit --model.
+const OpenCodeDefaultModel = "deepseek-v4.1-flash-free"
 
 // SystemPrompt tells the model how to judge a file and how to format its
 // answer. It is a var so tests and embedders can inspect or replace it.
@@ -45,6 +54,9 @@ type Config struct {
 	Timeout         time.Duration
 	MaxOutputTokens int
 	MaxInputRunes   int
+	// CacheDir stores verdicts so repeated scans of unchanged files do not
+	// spend tokens again. Empty disables the cache.
+	CacheDir string
 	// RetryDelay is the base backoff between retries of transient failures.
 	RetryDelay time.Duration
 	// HTTPClient overrides the default client. Useful for tests.
@@ -74,6 +86,8 @@ type Usage struct {
 	PromptTokens     int
 	CompletionTokens int
 	TotalTokens      int
+	// Cached is true when the verdict came from the local cache.
+	Cached bool
 }
 
 // Client calls an OpenAI-compatible chat-completions API.
@@ -82,6 +96,7 @@ type Client struct {
 	endpoint string
 	http     *http.Client
 	attempts int
+	cache    *Cache
 }
 
 // NewClient validates cfg and returns a judge client.
@@ -110,7 +125,7 @@ func NewClient(cfg Config) (*Client, error) {
 		cfg.MaxInputRunes = 120000
 	}
 	if cfg.RetryDelay <= 0 {
-		cfg.RetryDelay = 500 * time.Millisecond
+		cfg.RetryDelay = time.Second
 	}
 	httpClient := cfg.HTTPClient
 	if httpClient == nil {
@@ -120,7 +135,11 @@ func NewClient(cfg Config) (*Client, error) {
 	if !strings.HasSuffix(endpoint, "/chat/completions") {
 		endpoint += "/chat/completions"
 	}
-	return &Client{cfg: cfg, endpoint: endpoint, http: httpClient, attempts: 3}, nil
+	cache, err := NewCache(cfg.CacheDir)
+	if err != nil {
+		return nil, err
+	}
+	return &Client{cfg: cfg, endpoint: endpoint, http: httpClient, attempts: 4, cache: cache}, nil
 }
 
 // Model returns the configured model name.
@@ -141,13 +160,27 @@ type chatRequest struct {
 	MaxTokens   int           `json:"max_tokens,omitempty"`
 }
 
+type chatChoice struct {
+	Message struct {
+		Content          json.RawMessage `json:"content"`
+		ReasoningContent string          `json:"reasoning_content"`
+	} `json:"message"`
+	Text string `json:"text"`
+}
+
+func (c chatChoice) text() string {
+	if s := contentText(c.Message.Content); s != "" {
+		return s
+	}
+	if s := strings.TrimSpace(c.Message.ReasoningContent); s != "" {
+		return s
+	}
+	return c.Text
+}
+
 type chatResponse struct {
-	Choices []struct {
-		Message struct {
-			Content string `json:"content"`
-		} `json:"message"`
-	} `json:"choices"`
-	Usage struct {
+	Choices []chatChoice `json:"choices"`
+	Usage   struct {
 		PromptTokens     int `json:"prompt_tokens"`
 		CompletionTokens int `json:"completion_tokens"`
 		TotalTokens      int `json:"total_tokens"`
@@ -158,19 +191,33 @@ type chatResponse struct {
 	} `json:"error,omitempty"`
 }
 
+// ParseError marks a model answer that could not be turned into a verdict.
+// The judge retries these once with a corrective prompt.
+type ParseError struct {
+	Err error
+}
+
+func (e *ParseError) Error() string { return e.Err.Error() }
+func (e *ParseError) Unwrap() error { return e.Err }
+
+func isParseError(err error) bool {
+	var pe *ParseError
+	return errors.As(err, &pe)
+}
+
 // Analyze sends one file to the judge and parses its verdict.
 func (c *Client) Analyze(ctx context.Context, file File) (Verdict, Usage, error) {
-	body, err := json.Marshal(chatRequest{
-		Model: c.cfg.Model,
-		Messages: []chatMessage{
-			{Role: "system", Content: SystemPrompt},
-			{Role: "user", Content: buildUserPrompt(file, c.cfg.MaxInputRunes)},
-		},
-		Temperature: 0,
-		MaxTokens:   c.cfg.MaxOutputTokens,
-	})
+	if v, ok := c.cache.lookup(c.endpoint, c.cfg.Model, file, c.cfg.MaxInputRunes); ok {
+		return v, Usage{Cached: true}, nil
+	}
+
+	messages := []chatMessage{
+		{Role: "system", Content: SystemPrompt},
+		{Role: "user", Content: buildUserPrompt(file, c.cfg.MaxInputRunes)},
+	}
+	body, err := c.encode(messages)
 	if err != nil {
-		return Verdict{}, Usage{}, fmt.Errorf("encode judge request: %w", err)
+		return Verdict{}, Usage{}, err
 	}
 
 	var lastErr error
@@ -183,11 +230,24 @@ func (c *Client) Analyze(ctx context.Context, file File) (Verdict, Usage, error)
 			case <-time.After(delay):
 			}
 		}
-		verdict, usage, retry, err := c.once(ctx, body)
+		verdict, usage, retry, raw, err := c.once(ctx, body)
 		if err == nil {
+			c.cache.store(c.endpoint, c.cfg.Model, file, c.cfg.MaxInputRunes, verdict)
 			return verdict, usage, nil
 		}
 		lastErr = err
+		if isParseError(err) && strings.TrimSpace(raw) != "" {
+			repaired, repairUsage, repairErr := c.repair(ctx, messages, raw)
+			if repairErr == nil {
+				usage.PromptTokens += repairUsage.PromptTokens
+				usage.CompletionTokens += repairUsage.CompletionTokens
+				usage.TotalTokens += repairUsage.TotalTokens
+				c.cache.store(c.endpoint, c.cfg.Model, file, c.cfg.MaxInputRunes, repaired)
+				return repaired, usage, nil
+			}
+			lastErr = repairErr
+			break
+		}
 		if !retry {
 			break
 		}
@@ -195,10 +255,38 @@ func (c *Client) Analyze(ctx context.Context, file File) (Verdict, Usage, error)
 	return Verdict{}, Usage{}, lastErr
 }
 
-func (c *Client) once(ctx context.Context, payload []byte) (Verdict, Usage, bool, error) {
+func (c *Client) encode(messages []chatMessage) ([]byte, error) {
+	body, err := json.Marshal(chatRequest{
+		Model:       c.cfg.Model,
+		Messages:    messages,
+		Temperature: 0,
+		MaxTokens:   c.cfg.MaxOutputTokens,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("encode judge request: %w", err)
+	}
+	return body, nil
+}
+
+func (c *Client) repair(ctx context.Context, messages []chatMessage, raw string) (Verdict, Usage, error) {
+	repaired := make([]chatMessage, 0, len(messages)+2)
+	repaired = append(repaired, messages...)
+	repaired = append(repaired,
+		chatMessage{Role: "assistant", Content: truncate(raw, 8000)},
+		chatMessage{Role: "user", Content: "That answer was not valid JSON. Reply again with only the JSON object described above, with no prose and no code fences."},
+	)
+	body, err := c.encode(repaired)
+	if err != nil {
+		return Verdict{}, Usage{}, err
+	}
+	verdict, usage, _, _, err := c.once(ctx, body)
+	return verdict, usage, err
+}
+
+func (c *Client) once(ctx context.Context, payload []byte) (Verdict, Usage, bool, string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, bytes.NewReader(payload))
 	if err != nil {
-		return Verdict{}, Usage{}, false, fmt.Errorf("build judge request: %w", err)
+		return Verdict{}, Usage{}, false, "", fmt.Errorf("build judge request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if c.cfg.APIKey != "" {
@@ -207,40 +295,41 @@ func (c *Client) once(ctx context.Context, payload []byte) (Verdict, Usage, bool
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return Verdict{}, Usage{}, true, fmt.Errorf("judge request failed: %w", err)
+		return Verdict{}, Usage{}, true, "", fmt.Errorf("judge request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if err != nil {
-		return Verdict{}, Usage{}, true, fmt.Errorf("read judge response: %w", err)
+		return Verdict{}, Usage{}, true, "", fmt.Errorf("read judge response: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
 		retry := resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500
-		return Verdict{}, Usage{}, retry, fmt.Errorf("judge API returned %s: %s", resp.Status, truncate(string(data), 500))
+		return Verdict{}, Usage{}, retry, "", fmt.Errorf("judge API returned %s: %s", resp.Status, truncate(string(data), 500))
 	}
 
 	var cr chatResponse
 	if err := json.Unmarshal(data, &cr); err != nil {
-		return Verdict{}, Usage{}, false, fmt.Errorf("decode judge response: %w", err)
+		return Verdict{}, Usage{}, false, "", fmt.Errorf("decode judge response: %w", err)
 	}
 	if cr.Error != nil {
-		return Verdict{}, Usage{}, false, fmt.Errorf("judge API error: %s", cr.Error.Message)
+		return Verdict{}, Usage{}, false, "", fmt.Errorf("judge API error: %s", cr.Error.Message)
 	}
 	if len(cr.Choices) == 0 {
-		return Verdict{}, Usage{}, false, fmt.Errorf("judge API returned no choices")
+		return Verdict{}, Usage{}, false, "", fmt.Errorf("judge API returned no choices")
 	}
 
-	verdict, err := ParseVerdict(cr.Choices[0].Message.Content)
-	if err != nil {
-		return Verdict{}, Usage{}, false, err
-	}
 	usage := Usage{
 		PromptTokens:     cr.Usage.PromptTokens,
 		CompletionTokens: cr.Usage.CompletionTokens,
 		TotalTokens:      cr.Usage.TotalTokens,
 	}
-	return verdict, usage, false, nil
+	raw := cr.Choices[0].text()
+	verdict, err := ParseVerdict(raw)
+	if err != nil {
+		return Verdict{}, usage, false, raw, &ParseError{Err: err}
+	}
+	return verdict, usage, false, raw, nil
 }
 
 func buildUserPrompt(file File, maxRunes int) string {
@@ -265,24 +354,169 @@ func buildUserPrompt(file File, maxRunes int) string {
 	return b.String()
 }
 
-// ParseVerdict extracts and validates a verdict from model output, tolerating
-// code fences and surrounding prose.
-func ParseVerdict(raw string) (Verdict, error) {
-	text := strings.TrimSpace(raw)
-	text = strings.TrimPrefix(text, "```json")
-	text = strings.TrimPrefix(text, "```")
-	text = strings.TrimSuffix(text, "```")
-	start := strings.Index(text, "{")
-	end := strings.LastIndex(text, "}")
-	if start < 0 || end <= start {
-		return Verdict{}, fmt.Errorf("judge response did not contain a JSON object")
-	}
+type rawVerdict struct {
+	Verdict    string          `json:"verdict"`
+	Severity   string          `json:"severity"`
+	Category   string          `json:"category"`
+	Confidence json.RawMessage `json:"confidence"`
+	Reason     string          `json:"reason"`
+	Evidence   json.RawMessage `json:"evidence"`
+}
 
-	var v Verdict
-	if err := json.Unmarshal([]byte(text[start:end+1]), &v); err != nil {
-		return Verdict{}, fmt.Errorf("judge response was not valid JSON: %w", err)
+// ParseVerdict extracts and validates a verdict from model output, tolerating
+// code fences, surrounding prose, several JSON objects, numeric strings, and
+// evidence returned as a single string instead of an array.
+func ParseVerdict(raw string) (Verdict, error) {
+	var lastErr error
+	var found Verdict
+	valid := false
+	for _, obj := range jsonObjects(raw) {
+		var rv rawVerdict
+		if err := json.Unmarshal(obj, &rv); err != nil {
+			lastErr = fmt.Errorf("judge response was not valid JSON: %w", err)
+			continue
+		}
+		if strings.TrimSpace(rv.Verdict) == "" {
+			continue
+		}
+		v, err := normalize(Verdict{
+			Verdict:    rv.Verdict,
+			Severity:   rv.Severity,
+			Category:   rv.Category,
+			Confidence: parseFlexibleFloat(rv.Confidence),
+			Reason:     rv.Reason,
+			Evidence:   parseStringList(rv.Evidence),
+		})
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		found, valid = v, true
 	}
-	return normalize(v)
+	if valid {
+		return found, nil
+	}
+	if lastErr != nil {
+		return Verdict{}, lastErr
+	}
+	return Verdict{}, fmt.Errorf("judge response did not contain a JSON object")
+}
+
+// jsonObjects returns every balanced {...} object in s, ignoring braces that
+// appear inside JSON strings. Models often wrap the answer in a code fence or a
+// sentence, and sometimes reason through an earlier object first.
+func jsonObjects(s string) [][]byte {
+	var out [][]byte
+	depth := 0
+	start := -1
+	inString := false
+	escaped := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if inString {
+			switch {
+			case escaped:
+				escaped = false
+			case c == '\\':
+				escaped = true
+			case c == '"':
+				inString = false
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			inString = true
+		case '{':
+			if depth == 0 {
+				start = i
+			}
+			depth++
+		case '}':
+			if depth > 0 {
+				depth--
+				if depth == 0 && start >= 0 {
+					out = append(out, []byte(s[start:i+1]))
+					start = -1
+				}
+			}
+		}
+	}
+	return out
+}
+
+func parseFlexibleFloat(raw json.RawMessage) float64 {
+	if len(raw) == 0 || string(raw) == "null" {
+		return 0
+	}
+	var f float64
+	if err := json.Unmarshal(raw, &f); err == nil {
+		return f
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return 0
+	}
+	s = strings.TrimSpace(s)
+	s = strings.TrimSuffix(s, "%")
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return 0
+	}
+	return f
+}
+
+func parseStringList(raw json.RawMessage) []string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+	var list []string
+	if err := json.Unmarshal(raw, &list); err == nil {
+		return list
+	}
+	var one string
+	if err := json.Unmarshal(raw, &one); err == nil {
+		if strings.TrimSpace(one) == "" {
+			return nil
+		}
+		return []string{one}
+	}
+	var parts []struct {
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(raw, &parts); err == nil {
+		for _, p := range parts {
+			if strings.TrimSpace(p.Text) != "" {
+				list = append(list, p.Text)
+			}
+		}
+	}
+	return list
+}
+
+func contentText(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s
+	}
+	var parts []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(raw, &parts); err == nil {
+		var b strings.Builder
+		for _, p := range parts {
+			if p.Text == "" {
+				continue
+			}
+			b.WriteString(p.Text)
+		}
+		return b.String()
+	}
+	return ""
 }
 
 func normalize(v Verdict) (Verdict, error) {

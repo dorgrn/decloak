@@ -208,3 +208,110 @@ func writeChat(t *testing.T, w http.ResponseWriter, content string) {
 		"usage":   map[string]int{"prompt_tokens": 30, "completion_tokens": 12, "total_tokens": 42},
 	})
 }
+
+func TestAnalyzeRepairsInvalidJSON(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) == 1 {
+			writeChat(t, w, "I think this file is malicious.")
+			return
+		}
+		writeChat(t, w, `{"verdict":"malicious","severity":"high","reason":"fixed","evidence":[]}`)
+	}))
+	defer srv.Close()
+
+	v, usage, err := testClient(t, srv.URL).Analyze(context.Background(), File{Path: "a.md", Content: "x"})
+	if err != nil {
+		t.Fatalf("Analyze: %v", err)
+	}
+	if v.Verdict != "malicious" || calls.Load() != 2 {
+		t.Errorf("verdict=%+v calls=%d", v, calls.Load())
+	}
+	if usage.TotalTokens != 84 {
+		t.Errorf("usage should include both attempts, got %+v", usage)
+	}
+}
+
+func TestAnalyzeUsesCache(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		writeChat(t, w, `{"verdict":"suspicious","severity":"medium","reason":"maybe","evidence":[]}`)
+	}))
+	defer srv.Close()
+
+	c, err := NewClient(Config{
+		BaseURL:    srv.URL,
+		APIKey:     "k",
+		Model:      "m",
+		CacheDir:   t.TempDir(),
+		RetryDelay: time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := File{Path: "a.md", Language: model.LangMarkdown, Content: "hello"}
+	first, _, err := c.Analyze(context.Background(), file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, usage, err := c.Analyze(context.Background(), file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls.Load() != 1 || !usage.Cached || second.Verdict != first.Verdict {
+		t.Fatalf("calls=%d cached=%v first=%+v second=%+v", calls.Load(), usage.Cached, first, second)
+	}
+
+	file.Content = "edited"
+	if _, _, err := c.Analyze(context.Background(), file); err != nil {
+		t.Fatal(err)
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("editing the file must invalidate the cache, calls=%d", calls.Load())
+	}
+}
+
+func TestParseVerdictAcceptsLooseFields(t *testing.T) {
+	v, err := ParseVerdict(`{"verdict":"Malicious","severity":"high","confidence":"87%","reason":"x","evidence":"curl https://evil.test"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.Confidence != 0.87 || len(v.Evidence) != 1 || v.Evidence[0] != "curl https://evil.test" {
+		t.Errorf("loose fields not normalized: %+v", v)
+	}
+}
+
+func TestParseVerdictPrefersFinalObject(t *testing.T) {
+	v, err := ParseVerdict("First guess: {\"verdict\":\"benign\"}\nFinal: {\"verdict\":\"malicious\",\"severity\":\"critical\"}")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.Verdict != "malicious" || v.Severity != "critical" {
+		t.Errorf("expected the final verdict object, got %+v", v)
+	}
+}
+
+func TestAnalyzeAcceptsContentParts(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{"message": map[string]any{
+				"content": []map[string]string{
+					{"type": "text", "text": `{"verdict":"benign",`},
+					{"type": "text", "text": `"severity":"none","reason":"ok","evidence":[]}`},
+				},
+			}}},
+			"usage": map[string]int{"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+		})
+	}))
+	defer srv.Close()
+
+	v, _, err := testClient(t, srv.URL).Analyze(context.Background(), File{Path: "a.md", Content: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.Verdict != "benign" {
+		t.Errorf("verdict = %+v", v)
+	}
+}

@@ -17,7 +17,18 @@ uv run scripts/bench_msb.py --bin ./decloak --part validation --policy --breakdo
 - The default split is `source_disjoint`; the pinned dataset is cached under
   `.bench/msb/`.
 - The judge (`decloak-judge`) does not change static detection, but rule changes
-  still require the baseline above.
+  still require the baseline above. Measure judge recall on validation with:
+
+  ```bash
+  uv run scripts/bench_msb.py --bin ./decloak --part validation --policy \
+    --judge-bin ./decloak-judge --judge-only --judge-provider opencode
+  ```
+
+- The judge defaults to `--provider opencode` in the benchmark script and uses
+  `deepseek-v4.1-flash-free` unless `--judge-model` is given. Set
+  `OPENCODE_API_KEY` before running. Verdicts are cached under
+  `~/.cache/decloak/judge`; pass `--no-cache` to force fresh calls.
+
 
 ## Baseline (source_disjoint / validation, 2026-11-18)
 

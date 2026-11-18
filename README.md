@@ -85,9 +85,14 @@ anything anywhere.
 
 ```bash
 make build-judge
-export DECLOAK_JUDGE_API_KEY=...        # or OPENAI_API_KEY
-./decloak-judge scan ~/.claude/skills --model gpt-5-mini
+export OPENCODE_API_KEY=...             # or DECLOAK_JUDGE_API_KEY / OPENAI_API_KEY
+./decloak-judge scan ~/.claude/skills --provider opencode
 ```
+
+`--provider opencode` uses the OpenCode Zen OpenAI-compatible endpoint
+(`https://opencode.ai/inference/openai/v1`) and `deepseek-v4.1-flash-free` by
+default. Any other OpenAI-compatible endpoint still works with `--base-url` and
+`--model`.
 
 The judge sends files to an OpenAI-compatible chat-completions endpoint and asks
 for a structured verdict (`malicious`, `suspicious`, or `benign`) with severity,
@@ -95,6 +100,12 @@ category, confidence, a reason, and quoted evidence. Static findings are include
 as hints unless you pass `--no-static`. Verdicts are emitted as normal findings
 with rule ID `LLM-JUDGE-001`, `"category": "judge"`, and a `details` object, so
 table, JSON, SARIF, `--fail-on`, and `--format` all work as usual.
+
+Verdicts are cached on disk under `~/.cache/decloak/judge` (override with
+`--cache-dir`, disable with `--no-cache`). The cache key covers the endpoint,
+model, full prompt, and file content, so editing a file or changing the prompt
+re-judges it. If a model answers with prose instead of JSON, the judge asks it
+once to repair the answer before failing the file.
 
 ```bash
 # Local model through Ollama/vLLM/LiteLLM: no API key required.
@@ -225,7 +236,7 @@ decloak contains no HTTP client, no TLS, and no way to run a subprocess. This is
 
 ### MaliciousSkillBench
 
-To score decloak on the held-out split of [MaliciousSkillBench](https://huggingface.co/datasets/ProtectSkills/MaliciousSkillBench), run `make bench-msb` (needs `uv`; downloads a pinned dataset revision into `.bench/`). Most malicious skills in that benchmark are harmful instructions in plain prose with nothing hidden, so expect low recall without `--policy`: decloak's default rules find concealed content, not plain-sight intent. On the `source_disjoint` test split, the default rules reach **3.9% recall at 2.6% FPR** (HIGH+), while `--policy` reaches **36.7% recall at 3.3% FPR** (HIGH+; 37.2%/7.2% at LOW+). On the validation split, `--policy` reaches **36.3% recall at 1.2% FPR** (HIGH+; 44.4%/3.6% at LOW+). These are measured against a held-out split and are not tuned on it; treat them as directional.
+To score decloak on the held-out split of [MaliciousSkillBench](https://huggingface.co/datasets/ProtectSkills/MaliciousSkillBench), run `make bench-msb` (needs `uv`; downloads a pinned dataset revision into `.bench/`). Most malicious skills in that benchmark are harmful instructions in plain prose with nothing hidden, so expect low recall without `--policy`: decloak's default rules find concealed content, not plain-sight intent. On the `source_disjoint` test split, the default rules reach **3.9% recall at 2.6% FPR** (HIGH+), while `--policy` reaches **36.7% recall at 3.3% FPR** (HIGH+; 37.2%/7.2% at LOW+). On the validation split, `--policy` reaches **36.3% recall at 1.2% FPR** (HIGH+; 44.4%/3.6% at LOW+). These are measured against a held-out split and are not tuned on it; treat them as directional. To score the optional semantic judge on the same split, run `make bench-msb-judge PART=validation` with `OPENCODE_API_KEY` set. It defaults to the `opencode` provider and `deepseek-v4.1-flash-free`; override with `JUDGE_PROVIDER`/`JUDGE_MODEL`. Verdicts are cached, so reruns only spend tokens on edited files or changed prompts.
 
 ### Other checks
 

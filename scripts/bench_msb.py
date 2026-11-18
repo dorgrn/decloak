@@ -12,6 +12,7 @@ The default is the source-disjoint test split (839 malicious, 545 benign), the
 held-out partition other scanners publish. Tune rules on train/validation only.
 
     uv run scripts/bench_msb.py [--bin ./decloak] [--split source_disjoint] [--part test]
+    uv run scripts/bench_msb.py --part validation --judge-bin ./decloak-judge --judge-only
 
 Benchmark text is CC-BY-4.0 metadata over third-party skills; nothing is
 committed to this repository.
@@ -54,6 +55,12 @@ def main():
     ap.add_argument("--split", default="source_disjoint")
     ap.add_argument("--part", default="test", choices=["train", "validation", "test"])
     ap.add_argument("--policy", action="store_true", help="enable decloak's --policy rule stream")
+    ap.add_argument("--judge-bin", help="path to decloak-judge; unions LLM verdicts with static findings")
+    ap.add_argument("--judge-only", action="store_true", help="score judge findings only (requires --judge-bin)")
+    ap.add_argument("--judge-model", help="judge model name (default: judge's own env/config)")
+    ap.add_argument("--judge-provider", default="opencode", choices=["openai", "opencode"],
+                    help="provider preset for the judge (default: opencode)")
+    ap.add_argument("--judge-workers", type=int, default=4, help="concurrent judge requests")
     ap.add_argument("--breakdown", action="store_true", help="break HIGH+ recall down by source and category")
     ap.add_argument("--json", action="store_true", help="print the full report as JSON")
     args = ap.parse_args()
@@ -75,12 +82,29 @@ def main():
             f.write(r["skill_text"] or r["public_skill_text"] or "")
 
     extra = ["--policy"] if args.policy else []
-    out = subprocess.run([args.bin, "scan", work, "--fail-on", "low", "-f", "json", *extra],
-                         capture_output=True, text=True, check=False)
-    if out.returncode not in (0, 1):
-        raise SystemExit(f"decloak failed ({out.returncode}): {out.stderr}")
-    findings = json.loads(out.stdout)
-    findings = findings.get("findings", findings) if isinstance(findings, dict) else findings
+    findings = []
+    if not args.judge_only:
+        out = subprocess.run([args.bin, "scan", work, "--fail-on", "low", "-f", "json", *extra],
+                             capture_output=True, text=True, check=False)
+        if out.returncode not in (0, 1):
+            raise SystemExit(f"decloak failed ({out.returncode}): {out.stderr}")
+        findings = json.loads(out.stdout)
+        findings = findings.get("findings", findings) if isinstance(findings, dict) else findings
+
+    judge_count = 0
+    if args.judge_bin:
+        judge_cmd = [args.judge_bin, "scan", work, "--fail-on", "low", "-f", "json",
+                     "--workers", str(args.judge_workers), "--provider", args.judge_provider, *extra]
+        if args.judge_model:
+            judge_cmd += ["--model", args.judge_model]
+        jout = subprocess.run(judge_cmd, capture_output=True, text=True, check=False)
+        if jout.returncode not in (0, 1):
+            raise SystemExit(f"decloak-judge failed ({jout.returncode}): {jout.stderr}")
+        jfindings = json.loads(jout.stdout)
+        jfindings = jfindings.get("findings", jfindings) if isinstance(jfindings, dict) else jfindings
+        judge_count = len(jfindings)
+        findings = list(findings) + list(jfindings)
+
     worst = collections.defaultdict(int)
     for f in findings:
         bid = os.path.basename(os.path.dirname(f["file_path"]))
@@ -89,7 +113,14 @@ def main():
     mal = sum(int(r["label"]) == 1 for r in rows.values())
     report = {"benchmark": f"{REPO}@{REVISION[:7]}", "split": f"{args.split}/{args.part}",
               "malicious": mal, "benign": len(rows) - mal, "thresholds": {}}
+    if args.judge_bin:
+        report["judge"] = {"binary": args.judge_bin, "model": args.judge_model,
+                           "only": args.judge_only, "findings": judge_count}
     print(f"{report['benchmark']} {report['split']}: {mal} malicious, {len(rows) - mal} benign")
+    if args.judge_bin:
+        print(f"judge: {judge_count} findings from {args.judge_bin}"
+              + (f" (model {args.judge_model})" if args.judge_model else "")
+              + (" [judge-only]" if args.judge_only else ""))
     print(f"{'threshold':10} {'recall':>7} {'FPR':>6} {'precision':>9} {'F1':>6}")
     for name, t in (("LOW+", 1), ("MEDIUM+", 2), ("HIGH+", 3), ("CRITICAL", 4)):
         tp = sum(int(r["label"]) == 1 and worst[b] >= t for b, r in rows.items())

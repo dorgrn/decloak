@@ -9,7 +9,7 @@ LDFLAGS := -s -w \
 	-X $(PKG)/internal/version.Commit=$(COMMIT) \
 	-X $(PKG)/internal/version.Date=$(DATE)
 
-.PHONY: build build-judge test cover lint tidy update-golden clean bench-msb
+.PHONY: build build-judge test cover lint tidy update-golden clean bench-msb bench-msb-judge
 
 build:
 	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o $(BINARY) ./cmd/decloak
@@ -41,3 +41,14 @@ clean:
 PART ?= test
 bench-msb: build
 	uv run scripts/bench_msb.py --bin ./$(BINARY) --part $(PART)
+
+JUDGE_PROVIDER ?= opencode
+JUDGE_MODEL ?=
+JUDGE_ARGS := --judge-provider $(JUDGE_PROVIDER)
+ifneq ($(JUDGE_MODEL),)
+JUDGE_ARGS += --judge-model $(JUDGE_MODEL)
+endif
+
+bench-msb-judge: build build-judge
+	uv run scripts/bench_msb.py --bin ./$(BINARY) --part $(PART) --policy \
+		--judge-bin ./$(JUDGE) --judge-only $(JUDGE_ARGS)
