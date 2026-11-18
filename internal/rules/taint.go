@@ -360,10 +360,21 @@ func containsTaintedIdentifierText(text string, tainted map[string]struct{}) boo
 	return false
 }
 
+// formatPipeRe matches pipes into pure stdin data formatters only. A generic
+// "python -m <anything>" also covers module execution (http.server, pip), so
+// only json.tool, with nothing chained after it, counts as formatting.
+var formatPipeRe = regexp.MustCompile(`(?i)\|\s*python3?\s+-m\s+json\.tool(?:\s+[^|&;<>]*)?\s*$`)
+
 func dedupeFindings(findings []model.Finding) []model.Finding {
 	seen := make(map[string]struct{}, len(findings))
 	out := findings[:0]
 	for _, f := range findings {
+		if f.RuleID == "SH-DL-001" && formatPipeRe.MatchString(f.Snippet) {
+			continue
+		}
+		if f.Category == "" {
+			f.Category = model.CategoryConcealment
+		}
 		key := fmt.Sprintf("%s\x00%s\x00%d\x00%d\x00%d\x00%d\x00%s",
 			f.RuleID, f.FilePath, f.StartLine, f.EndLine, f.StartCol, f.EndCol, f.Snippet)
 		if _, dup := seen[key]; dup {
