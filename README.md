@@ -31,8 +31,8 @@ MEDIUM    SKL-PERM-006  markdown  SKILL.md:4:1    allowed-tools: Read, Bash(*)
 ## Install
 
 ```bash
-# private module: let Go fetch it with your git credentials
-GOPRIVATE=github.com/dorgrn/* go install github.com/dorgrn/decloak/cmd/decloak@latest
+go install github.com/dorgrn/decloak/cmd/decloak@latest
+go install github.com/dorgrn/decloak/cmd/decloak-judge@latest   # optional LLM judge
 ```
 
 Or download a prebuilt binary (Linux, macOS, Windows; amd64 and arm64) from [Releases](https://github.com/dorgrn/decloak/releases).
