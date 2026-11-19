@@ -69,3 +69,32 @@ func TestResolveMCPServerScriptsMalformed(t *testing.T) {
 		t.Fatal("expected malformed MCP config to return an error")
 	}
 }
+
+func TestIsMCPConfigFile(t *testing.T) {
+	tests := []struct {
+		path string
+		want bool
+	}{
+		{"mcp.json", true},
+		{".mcp.json", true},
+		{"claude_desktop_config.json", true},
+		{"mcp_config.json", true},
+		{"managed-mcp.json", true},
+		{".claude.json", true},
+		{"/home/u/.cursor/mcp.json", true},
+		{"/proj/.vscode/MCP.JSON", true},
+		{"Claude_Desktop_Config.json", true},
+		{"package.json", false},
+		{"mcp.json.bak", false},
+		{"my-mcp.json", false},
+		{"settings.json", false},
+		{"", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			if got := IsMCPConfigFile(tt.path); got != tt.want {
+				t.Errorf("IsMCPConfigFile(%q) = %v, want %v", tt.path, got, tt.want)
+			}
+		})
+	}
+}

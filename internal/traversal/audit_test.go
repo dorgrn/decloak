@@ -3,6 +3,8 @@ package traversal
 import (
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -55,5 +57,51 @@ func mustWrite(t *testing.T, path, content string) {
 	}
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestAppSupportLocationsUsePlatformConfigDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("APPDATA", "")
+
+	var base string
+	switch runtime.GOOS {
+	case "darwin":
+		base = filepath.Join(home, "Library", "Application Support")
+	case "windows":
+		base = filepath.Join(home, "AppData", "Roaming")
+	default:
+		base = filepath.Join(home, ".config")
+	}
+
+	got := map[string]string{}
+	for _, loc := range appSupportLocations(home) {
+		got[loc.Agent] = loc.Path
+	}
+	want := map[string]string{
+		"Claude Desktop": filepath.Join(base, "Claude", "claude_desktop_config.json"),
+		"VS Code":        filepath.Join(base, "Code", "User", "mcp.json"),
+		"Cursor":         filepath.Join(base, "Cursor", "User", "mcp.json"),
+	}
+	for agent, path := range want {
+		if got[agent] != path {
+			t.Errorf("%s path = %q, want %q", agent, got[agent], path)
+		}
+	}
+}
+
+func TestAppSupportLocationsHonorConfigDirOverride(t *testing.T) {
+	if runtime.GOOS == "darwin" {
+		t.Skip("macOS ignores XDG_CONFIG_HOME")
+	}
+	override := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", override)
+	t.Setenv("APPDATA", override)
+
+	for _, loc := range appSupportLocations(t.TempDir()) {
+		if !strings.HasPrefix(loc.Path, override) {
+			t.Errorf("%s path %q does not honor the override %q", loc.Agent, loc.Path, override)
+		}
 	}
 }
