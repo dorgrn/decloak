@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -139,7 +140,7 @@ func NewClient(cfg Config) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Client{cfg: cfg, endpoint: endpoint, http: httpClient, attempts: 4, cache: cache}, nil
+	return &Client{cfg: cfg, endpoint: endpoint, http: httpClient, attempts: 10, cache: cache}, nil
 }
 
 // Model returns the configured model name.
@@ -221,16 +222,20 @@ func (c *Client) Analyze(ctx context.Context, file File) (Verdict, Usage, error)
 	}
 
 	var lastErr error
+	var wait time.Duration
 	for attempt := 1; attempt <= c.attempts; attempt++ {
 		if attempt > 1 {
-			delay := c.cfg.RetryDelay * time.Duration(1<<(attempt-2))
+			delay := wait
+			if delay <= 0 {
+				delay = c.backoff(attempt)
+			}
 			select {
 			case <-ctx.Done():
 				return Verdict{}, Usage{}, ctx.Err()
 			case <-time.After(delay):
 			}
 		}
-		verdict, usage, retry, raw, err := c.once(ctx, body)
+		verdict, usage, retry, retryAfter, raw, err := c.once(ctx, body)
 		if err == nil {
 			c.cache.store(c.endpoint, c.cfg.Model, file, c.cfg.MaxInputRunes, verdict)
 			return verdict, usage, nil
@@ -251,9 +256,56 @@ func (c *Client) Analyze(ctx context.Context, file File) (Verdict, Usage, error)
 		if !retry {
 			break
 		}
+		wait = retryAfter
 	}
 	return Verdict{}, Usage{}, lastErr
 }
+
+// backoff returns the exponential wait before the given attempt, bounded so a
+// long outage does not stall a scan for minutes between tries.
+func (c *Client) backoff(attempt int) time.Duration {
+	delay := c.cfg.RetryDelay
+	for i := 2; i < attempt; i++ {
+		delay *= 2
+		if delay >= 30*time.Second {
+			return 30 * time.Second
+		}
+	}
+	return delay
+}
+
+// retryDelay reads the wait a provider asks for, preferring the Retry-After
+// header and falling back to the "try again in 12.3s" text Groq and others put
+// in the error body. It returns zero when the response carries no guidance.
+func retryDelay(resp *http.Response, body []byte) time.Duration {
+	if v := strings.TrimSpace(resp.Header.Get("Retry-After")); v != "" {
+		if secs, err := strconv.ParseFloat(v, 64); err == nil {
+			if secs > 0 {
+				return time.Duration(secs * float64(time.Second))
+			}
+			return 0
+		}
+		if when, err := http.ParseTime(v); err == nil {
+			if d := time.Until(when); d > 0 {
+				return d
+			}
+			return 0
+		}
+	}
+	m := retryAfterPattern.FindSubmatch(body)
+	if len(m) == 3 {
+		if n, err := strconv.ParseFloat(string(m[1]), 64); err == nil && n > 0 {
+			unit := time.Second
+			if string(m[2]) == "ms" {
+				unit = time.Millisecond
+			}
+			return time.Duration(n * float64(unit))
+		}
+	}
+	return 0
+}
+
+var retryAfterPattern = regexp.MustCompile(`try again in ([0-9]+(?:\.[0-9]+)?)\s*(ms|s)\b`)
 
 func (c *Client) encode(messages []chatMessage) ([]byte, error) {
 	body, err := json.Marshal(chatRequest{
@@ -279,14 +331,14 @@ func (c *Client) repair(ctx context.Context, messages []chatMessage, raw string)
 	if err != nil {
 		return Verdict{}, Usage{}, err
 	}
-	verdict, usage, _, _, err := c.once(ctx, body)
+	verdict, usage, _, _, _, err := c.once(ctx, body)
 	return verdict, usage, err
 }
 
-func (c *Client) once(ctx context.Context, payload []byte) (Verdict, Usage, bool, string, error) {
+func (c *Client) once(ctx context.Context, payload []byte) (Verdict, Usage, bool, time.Duration, string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, bytes.NewReader(payload))
 	if err != nil {
-		return Verdict{}, Usage{}, false, "", fmt.Errorf("build judge request: %w", err)
+		return Verdict{}, Usage{}, false, 0, "", fmt.Errorf("build judge request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if c.cfg.APIKey != "" {
@@ -295,28 +347,32 @@ func (c *Client) once(ctx context.Context, payload []byte) (Verdict, Usage, bool
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return Verdict{}, Usage{}, true, "", fmt.Errorf("judge request failed: %w", err)
+		return Verdict{}, Usage{}, true, 0, "", fmt.Errorf("judge request failed: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if err != nil {
-		return Verdict{}, Usage{}, true, "", fmt.Errorf("read judge response: %w", err)
+		return Verdict{}, Usage{}, true, 0, "", fmt.Errorf("read judge response: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
 		retry := resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500
-		return Verdict{}, Usage{}, retry, "", fmt.Errorf("judge API returned %s: %s", resp.Status, truncate(string(data), 500))
+		wait := time.Duration(0)
+		if retry {
+			wait = retryDelay(resp, data)
+		}
+		return Verdict{}, Usage{}, retry, wait, "", fmt.Errorf("judge API returned %s: %s", resp.Status, truncate(string(data), 500))
 	}
 
 	var cr chatResponse
 	if err := json.Unmarshal(data, &cr); err != nil {
-		return Verdict{}, Usage{}, false, "", fmt.Errorf("decode judge response: %w", err)
+		return Verdict{}, Usage{}, false, 0, "", fmt.Errorf("decode judge response: %w", err)
 	}
 	if cr.Error != nil {
-		return Verdict{}, Usage{}, false, "", fmt.Errorf("judge API error: %s", cr.Error.Message)
+		return Verdict{}, Usage{}, false, 0, "", fmt.Errorf("judge API error: %s", cr.Error.Message)
 	}
 	if len(cr.Choices) == 0 {
-		return Verdict{}, Usage{}, false, "", fmt.Errorf("judge API returned no choices")
+		return Verdict{}, Usage{}, false, 0, "", fmt.Errorf("judge API returned no choices")
 	}
 
 	usage := Usage{
@@ -327,9 +383,9 @@ func (c *Client) once(ctx context.Context, payload []byte) (Verdict, Usage, bool
 	raw := cr.Choices[0].text()
 	verdict, err := ParseVerdict(raw)
 	if err != nil {
-		return Verdict{}, usage, false, raw, &ParseError{Err: err}
+		return Verdict{}, usage, false, 0, raw, &ParseError{Err: err}
 	}
-	return verdict, usage, false, raw, nil
+	return verdict, usage, false, 0, raw, nil
 }
 
 func buildUserPrompt(file File, maxRunes int) string {
@@ -592,8 +648,18 @@ func (v Verdict) SeverityValue() model.Severity {
 func (v Verdict) IsBenign() bool { return v.Verdict == "benign" }
 
 // ToFinding converts a non-benign verdict into a scanner finding. The second
-// return value is false for benign verdicts, which are not findings.
+// return value is false for benign verdicts, which are not findings. It cannot
+// anchor evidence without the source text; use ToFindingInContent for real line
+// numbers.
 func ToFinding(target model.TargetFile, v Verdict, judgeModel string) (model.Finding, bool) {
+	return ToFindingInContent(target, v, judgeModel, "")
+}
+
+// ToFindingInContent is ToFinding with the judged file's source text. It
+// locates the first evidence quote in content and reports the real line and
+// column, so judge findings point at the quoted text instead of line 1. When no
+// quote can be located it falls back to line 1 with the quote as the snippet.
+func ToFindingInContent(target model.TargetFile, v Verdict, judgeModel, content string) (model.Finding, bool) {
 	if v.IsBenign() {
 		return model.Finding{}, false
 	}
@@ -606,12 +672,26 @@ func ToFinding(target model.TargetFile, v Verdict, judgeModel string) (model.Fin
 		}
 	}
 
+	startLine, endLine := uint32(1), uint32(1)
+	startCol, endCol := uint32(1), uint32(1)
 	snippet := ""
-	if len(v.Evidence) > 0 {
+	anchored := false
+	if m, ok := locateEvidence(content, v.Evidence); ok {
+		startLine, endLine = m.line, m.line
+		startCol, endCol = m.startCol, m.endCol
+		snippet = m.text
+		anchored = true
+	}
+	if snippet == "" && len(v.Evidence) > 0 {
 		snippet = firstLine(v.Evidence[0])
 	}
 	if snippet == "" {
 		snippet = fmt.Sprintf("%s verdict for %s", v.Verdict, target.Path)
+	}
+	if !anchored {
+		startLine, endLine = 1, 1
+		startCol = 1
+		endCol = uint32(len([]rune(snippet)) + 1)
 	}
 
 	details := map[string]string{
@@ -631,16 +711,114 @@ func ToFinding(target model.TargetFile, v Verdict, judgeModel string) (model.Fin
 		SeverityName: sev.String(),
 		Language:     target.Language,
 		FilePath:     target.Path,
-		StartLine:    1,
-		EndLine:      1,
-		StartCol:     1,
-		EndCol:       uint32(len([]rune(snippet)) + 1),
+		StartLine:    startLine,
+		EndLine:      endLine,
+		StartCol:     startCol,
+		EndCol:       endCol,
 		Message: fmt.Sprintf("LLM judge: %s %s (%.0f%% confidence) - %s",
 			v.Verdict, v.Category, v.Confidence*100, v.Reason),
 		Snippet:     truncate(snippet, 200),
 		Remediation: "Review the quoted evidence manually. LLM verdicts are advisory and can be wrong.",
 		Details:     details,
 	}, true
+}
+
+// evidenceMatch is a located evidence quote.
+type evidenceMatch struct {
+	line     uint32
+	startCol uint32
+	endCol   uint32
+	text     string
+}
+
+// locateEvidence finds the first evidence quote that appears in content. It
+// tries the most specific line of each quote first, then a whitespace-collapsed
+// fallback so indentation differences do not defeat the match.
+func locateEvidence(content string, evidence []string) (evidenceMatch, bool) {
+	if strings.TrimSpace(content) == "" || len(evidence) == 0 {
+		return evidenceMatch{}, false
+	}
+	lines := strings.Split(content, "\n")
+	for _, quote := range evidence {
+		needles := quoteNeedles(quote)
+		for _, needle := range needles {
+			for i, line := range lines {
+				line = strings.TrimRight(line, "\r")
+				if idx, ok := matchNeedle(line, needle); ok {
+					return evidenceAt(i, line, idx, needle), true
+				}
+			}
+		}
+		for _, needle := range needles {
+			collapsed := collapseSpaces(needle)
+			if len([]rune(collapsed)) < 8 {
+				continue
+			}
+			for i, line := range lines {
+				line = strings.TrimRight(line, "\r")
+				if strings.Contains(collapseSpaces(line), collapsed) {
+					trimmed := strings.TrimSpace(line)
+					return evidenceMatch{
+						line:     uint32(i + 1),
+						startCol: 1,
+						endCol:   uint32(len([]rune(trimmed)) + 1),
+						text:     trimmed,
+					}, true
+				}
+			}
+		}
+	}
+	return evidenceMatch{}, false
+}
+
+// quoteNeedles returns the usable lines of an evidence quote, longest first so
+// a distinctive command is preferred over a short generic one.
+func quoteNeedles(quote string) []string {
+	out := make([]string, 0, 4)
+	for _, line := range strings.Split(quote, "\n") {
+		line = strings.TrimSpace(line)
+		line = strings.Trim(line, "`")
+		line = strings.TrimSpace(line)
+		if len([]rune(line)) >= 4 {
+			out = append(out, line)
+		}
+	}
+	for i := 1; i < len(out); i++ {
+		for j := i; j > 0 && len([]rune(out[j])) > len([]rune(out[j-1])); j-- {
+			out[j], out[j-1] = out[j-1], out[j]
+		}
+	}
+	return out
+}
+
+// matchNeedle returns the byte offset of needle in line, case-insensitively when
+// case folding preserves byte length.
+func matchNeedle(line, needle string) (int, bool) {
+	if idx := strings.Index(line, needle); idx >= 0 {
+		return idx, true
+	}
+	lowerLine := strings.ToLower(line)
+	lowerNeedle := strings.ToLower(needle)
+	if len(lowerLine) != len(line) || len(lowerNeedle) != len(needle) {
+		return 0, false
+	}
+	idx := strings.Index(lowerLine, lowerNeedle)
+	return idx, idx >= 0
+}
+
+func evidenceAt(lineIndex int, line string, byteIdx int, needle string) evidenceMatch {
+	startCol := uint32(len([]rune(line[:byteIdx])) + 1)
+	endCol := startCol + uint32(len([]rune(needle)))
+	return evidenceMatch{
+		line:     uint32(lineIndex + 1),
+		startCol: startCol,
+		endCol:   endCol,
+		text:     strings.TrimSpace(line),
+	}
+}
+
+func collapseSpaces(s string) string {
+	return strings.Join(strings.Fields(s), " ")
 }
 
 func firstLine(s string) string {

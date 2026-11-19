@@ -308,7 +308,7 @@ func analyzeAll(ctx context.Context, client *judge.Client, targets []model.Targe
 			}
 			results[i].verdict = verdict.Verdict
 			results[i].cached = usage.Cached
-			if f, ok := judge.ToFinding(target, verdict, client.Model()); ok {
+			if f, ok := judge.ToFindingInContent(target, verdict, client.Model(), string(src)); ok {
 				results[i].finding = &f
 			}
 		}(i, target)

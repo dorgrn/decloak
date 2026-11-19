@@ -99,7 +99,9 @@ for a structured verdict (`malicious`, `suspicious`, or `benign`) with severity,
 category, confidence, a reason, and quoted evidence. Static findings are included
 as hints unless you pass `--no-static`. Verdicts are emitted as normal findings
 with rule ID `LLM-JUDGE-001`, `"category": "judge"`, and a `details` object, so
-table, JSON, SARIF, `--fail-on`, and `--format` all work as usual.
+table, JSON, SARIF, `--fail-on`, and `--format` all work as usual. The first
+quoted evidence string is matched back to the source text when possible, so the
+finding carries the real line and column instead of defaulting to line 1.
 
 Verdicts are cached on disk under `~/.cache/decloak/judge` (override with
 `--cache-dir`, disable with `--no-cache`). The cache key covers the endpoint,

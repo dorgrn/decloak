@@ -19,6 +19,7 @@ committed to this repository.
 """
 import argparse
 import collections
+import hashlib
 import json
 import os
 import shutil
@@ -49,6 +50,23 @@ def fetch():
         os.replace(dst + ".part", dst)
 
 
+def parse_shard(value):
+    if not value:
+        return 0, 1
+    try:
+        index, total = (int(part) for part in value.split("/", 1))
+    except ValueError:
+        raise SystemExit(f"invalid --shard {value!r}: expected I/N, e.g. 0/16")
+    if total < 1 or not 0 <= index < total:
+        raise SystemExit(f"invalid --shard {value!r}: need 0 <= I < N")
+    return index, total
+
+
+def shard_of(benchmark_id, total):
+    digest = hashlib.sha256(benchmark_id.encode()).digest()
+    return int.from_bytes(digest[:8], "big") % total
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--bin", default=os.path.join(ROOT, "decloak"))
@@ -61,9 +79,17 @@ def main():
     ap.add_argument("--judge-provider", default="opencode", choices=["openai", "opencode"],
                     help="provider preset for the judge (default: opencode)")
     ap.add_argument("--judge-workers", type=int, default=4, help="concurrent judge requests")
+    ap.add_argument("--judge-max-input-chars", type=int,
+                    help="cap judge input characters (e.g. 24000 for Groq's 8000 TPM limit)")
+    ap.add_argument("--shard", metavar="I/N",
+                    help="run only shard I of N (0-based, deterministic by benchmark id); "
+                         "judge verdicts are cached, so shards can be run across days and a final "
+                         "unsharded run produces the full score for free")
     ap.add_argument("--breakdown", action="store_true", help="break HIGH+ recall down by source and category")
     ap.add_argument("--json", action="store_true", help="print the full report as JSON")
     args = ap.parse_args()
+
+    shard_index, shard_total = parse_shard(args.shard)
 
     fetch()
     split = pq.read_table(os.path.join(CACHE, "splits", f"{args.split}.parquet")).to_pylist()
@@ -73,6 +99,8 @@ def main():
         cols += ["source_name", "provenance", "evidence_type", "attack_categories"]
     rows = {r["benchmark_id"]: r for r in pq.read_table(
         os.path.join(CACHE, "primary.parquet"), columns=cols).to_pylist() if r["benchmark_id"] in ids}
+    if shard_total > 1:
+        rows = {bid: r for bid, r in rows.items() if shard_of(bid, shard_total) == shard_index}
 
     work = os.path.join(CACHE, "work", f"{args.split}-{args.part}")
     shutil.rmtree(work, ignore_errors=True)
@@ -97,6 +125,8 @@ def main():
                      "--workers", str(args.judge_workers), "--provider", args.judge_provider, *extra]
         if args.judge_model:
             judge_cmd += ["--model", args.judge_model]
+        if args.judge_max_input_chars:
+            judge_cmd += ["--max-input-chars", str(args.judge_max_input_chars)]
         jout = subprocess.run(judge_cmd, capture_output=True, text=True, check=False)
         if jout.returncode not in (0, 1):
             raise SystemExit(f"decloak-judge failed ({jout.returncode}): {jout.stderr}")
@@ -111,12 +141,16 @@ def main():
         worst[bid] = max(worst[bid], SEV[f["severity"]])
 
     mal = sum(int(r["label"]) == 1 for r in rows.values())
+    benign = len(rows) - mal
     report = {"benchmark": f"{REPO}@{REVISION[:7]}", "split": f"{args.split}/{args.part}",
-              "malicious": mal, "benign": len(rows) - mal, "thresholds": {}}
+              "malicious": mal, "benign": benign, "thresholds": {}}
+    if shard_total > 1:
+        report["shard"] = f"{shard_index}/{shard_total}"
     if args.judge_bin:
         report["judge"] = {"binary": args.judge_bin, "model": args.judge_model,
                            "only": args.judge_only, "findings": judge_count}
-    print(f"{report['benchmark']} {report['split']}: {mal} malicious, {len(rows) - mal} benign")
+    shard_note = f" [shard {shard_index}/{shard_total}]" if shard_total > 1 else ""
+    print(f"{report['benchmark']} {report['split']}: {mal} malicious, {benign} benign{shard_note}")
     if args.judge_bin:
         print(f"judge: {judge_count} findings from {args.judge_bin}"
               + (f" (model {args.judge_model})" if args.judge_model else "")
@@ -125,7 +159,8 @@ def main():
     for name, t in (("LOW+", 1), ("MEDIUM+", 2), ("HIGH+", 3), ("CRITICAL", 4)):
         tp = sum(int(r["label"]) == 1 and worst[b] >= t for b, r in rows.items())
         fp = sum(int(r["label"]) == 0 and worst[b] >= t for b, r in rows.items())
-        rec, fpr = tp / mal, fp / (len(rows) - mal)
+        rec = tp / mal if mal else 0.0
+        fpr = fp / benign if benign else 0.0
         prec = tp / (tp + fp) if tp + fp else 0.0
         f1 = 2 * prec * rec / (prec + rec) if prec + rec else 0.0
         report["thresholds"][name] = {"tp": tp, "fp": fp, "recall": rec, "fpr": fpr, "precision": prec, "f1": f1}
