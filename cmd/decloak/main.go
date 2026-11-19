@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -32,9 +33,42 @@ type ScanOptions struct {
 	Policy        bool
 }
 
-const exitFindings = 1
+const (
+	exitClean    = 0
+	exitFindings = 1
+	exitError    = 2
+)
+
+// exitCodeError carries a process exit code out of a cobra command.
+type exitCodeError struct{ code int }
+
+func (e exitCodeError) Error() string { return fmt.Sprintf("exit %d", e.code) }
 
 func main() {
+	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+}
+
+func run(args []string, stdout, stderr io.Writer) int {
+	return execute(newRootCmd(stdout, stderr), args, stderr)
+}
+
+// execute runs cmd with args and maps the result to a process exit code.
+func execute(cmd *cobra.Command, args []string, stderr io.Writer) int {
+	cmd.SetArgs(args)
+	err := cmd.ExecuteContext(context.Background())
+	var ec exitCodeError
+	switch {
+	case errors.As(err, &ec):
+		return ec.code
+	case err != nil:
+		_, _ = fmt.Fprintf(stderr, "Error: %v\n", err)
+		return exitError
+	default:
+		return exitClean
+	}
+}
+
+func newRootCmd(stdout, stderr io.Writer) *cobra.Command {
 	opts := &ScanOptions{}
 
 	rootCmd := &cobra.Command{
@@ -49,6 +83,8 @@ chains, image-carried instructions, and credential exfiltration directives.
 decloak never executes scanned code and contains no network client.`,
 		SilenceUsage: true,
 	}
+	rootCmd.SetOut(stdout)
+	rootCmd.SetErr(stderr)
 
 	scanCmd := &cobra.Command{
 		Use:   "scan [path...]",
@@ -60,11 +96,11 @@ decloak never executes scanned code and contains no network client.`,
 			paths := args
 			if opts.StdinPaths {
 				var err error
-				if paths, err = readPaths(os.Stdin); err != nil {
+				if paths, err = readPaths(cmd.InOrStdin()); err != nil {
 					return err
 				}
 				if len(paths) == 0 {
-					return report(opts, nil)
+					return report(opts, stdout, nil)
 				}
 			} else if len(paths) == 0 {
 				paths = []string{"."}
@@ -73,7 +109,7 @@ decloak never executes scanned code and contains no network client.`,
 			if err != nil {
 				return err
 			}
-			return report(opts, findings)
+			return report(opts, stdout, findings)
 		},
 	}
 	addScanFlags(scanCmd, opts)
@@ -94,21 +130,21 @@ directory, then scans them. Everything stays on this machine.`,
 			}
 			locs := traversal.AgentLocations(home)
 			if len(locs) == 0 {
-				fmt.Fprintln(os.Stderr, "No agent configuration found in", home)
-				return report(opts, nil)
+				_, _ = fmt.Fprintln(stderr, "No agent configuration found in", home)
+				return report(opts, stdout, nil)
 			}
 			paths := make([]string, 0, len(locs))
-			fmt.Fprintf(os.Stderr, "Scanning %d agent locations:\n", len(locs))
+			_, _ = fmt.Fprintf(stderr, "Scanning %d agent locations:\n", len(locs))
 			for _, loc := range locs {
-				fmt.Fprintf(os.Stderr, "  %-15s %s\n", loc.Agent, output.DisplayPath(loc.Path))
+				_, _ = fmt.Fprintf(stderr, "  %-15s %s\n", loc.Agent, output.DisplayPath(loc.Path))
 				paths = append(paths, loc.Path)
 			}
-			fmt.Fprintln(os.Stderr)
+			_, _ = fmt.Fprintln(stderr)
 			findings, err := scanPaths(opts, paths)
 			if err != nil {
 				return err
 			}
-			return report(opts, findings)
+			return report(opts, stdout, findings)
 		},
 	}
 	addScanFlags(auditCmd, opts)
@@ -126,7 +162,7 @@ directory, then scans them. Everything stays on this machine.`,
 			if err := lf.Write(lockFile); err != nil {
 				return err
 			}
-			fmt.Fprintf(os.Stderr, "Locked %d files to %s\n", len(lf.Files), lockFile)
+			_, _ = fmt.Fprintf(stderr, "Locked %d files to %s\n", len(lf.Files), lockFile)
 			return nil
 		},
 	}
@@ -144,15 +180,14 @@ directory, then scans them. Everything stays on this machine.`,
 			}
 			drift := want.Diff(lock.Build(targets))
 			if len(drift) == 0 {
-				fmt.Fprintf(os.Stderr, "OK: %d files match %s\n", len(want.Files), lockFile)
+				_, _ = fmt.Fprintf(stderr, "OK: %d files match %s\n", len(want.Files), lockFile)
 				return nil
 			}
 			for _, d := range drift {
-				fmt.Printf("%-8s %s\n", d.Kind, d.Path)
+				_, _ = fmt.Fprintf(stdout, "%-8s %s\n", d.Kind, d.Path)
 			}
-			fmt.Fprintf(os.Stderr, "\n%d files drifted from %s. Review the changes, then run `decloak lock` to accept them.\n", len(drift), lockFile)
-			os.Exit(exitFindings)
-			return nil
+			_, _ = fmt.Fprintf(stderr, "\n%d files drifted from %s. Review the changes, then run `decloak lock` to accept them.\n", len(drift), lockFile)
+			return exitCodeError{code: exitFindings}
 		},
 	}
 	for _, c := range []*cobra.Command{lockCmd, verifyCmd} {
@@ -174,7 +209,7 @@ directory, then scans them. Everything stays on this machine.`,
 				if strings.HasPrefix(r.ID, "POL-") {
 					suffix = " [opt-in: --policy]"
 				}
-				fmt.Printf("%-14s [%-8s] (%s) %s%s\n", r.ID, r.Severity, r.Language, r.Description, suffix)
+				_, _ = fmt.Fprintf(stdout, "%-14s [%-8s] (%s) %s%s\n", r.ID, r.Severity, r.Language, r.Description, suffix)
 			}
 			return nil
 		},
@@ -184,15 +219,15 @@ directory, then scans them. Everything stays on this machine.`,
 		Use:   "version",
 		Short: "Print the decloak version",
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Println(version.String())
+			_, _ = fmt.Fprintln(stdout, version.String())
 		},
 	}
 
 	rootCmd.AddCommand(scanCmd, auditCmd, lockCmd, verifyCmd, rulesCmd, versionCmd)
 
-	if err := rootCmd.Execute(); err != nil {
-		os.Exit(2)
-	}
+	// run prints errors itself so an exit-code carrier is never shown as one.
+	rootCmd.SilenceErrors = true
+	return rootCmd
 }
 
 func addScanFlags(cmd *cobra.Command, opts *ScanOptions) {
@@ -271,12 +306,12 @@ func scanPaths(opts *ScanOptions, paths []string) ([]model.Finding, error) {
 	return findings, nil
 }
 
-func report(opts *ScanOptions, findings []model.Finding) error {
+func report(opts *ScanOptions, stdout io.Writer, findings []model.Finding) error {
 	threshold, err := model.ParseSeverity(opts.FailOn)
 	if err != nil {
 		return err
 	}
-	reporter, err := output.NewReporter(opts.Format, os.Stdout)
+	reporter, err := output.NewReporter(opts.Format, stdout)
 	if err != nil {
 		return err
 	}
@@ -284,7 +319,7 @@ func report(opts *ScanOptions, findings []model.Finding) error {
 		return fmt.Errorf("failed to write report: %w", err)
 	}
 	if model.ShouldFail(findings, threshold) {
-		os.Exit(exitFindings)
+		return exitCodeError{code: exitFindings}
 	}
 	return nil
 }
