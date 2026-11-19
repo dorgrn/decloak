@@ -99,23 +99,45 @@ for a structured verdict (`malicious`, `suspicious`, or `benign`) with severity,
 category, confidence, a reason, and quoted evidence. Static findings are included
 as hints unless you pass `--no-static`. Verdicts are emitted as normal findings
 with rule ID `LLM-JUDGE-001`, `"category": "judge"`, and a `details` object, so
-table, JSON, SARIF, `--fail-on`, and `--format` all work as usual. The first
-quoted evidence string is matched back to the source text when possible, so the
-finding carries the real line and column instead of defaulting to line 1.
+table, JSON, SARIF, `--fail-on`, and `--format` all work as usual.
+
+The judge is built to be attacked by the files it reads:
+
+- **Unforgeable file boundary.** Each request wraps the file in marker lines with
+  a fresh random token, so a skill cannot write "end of file" and then speak to
+  the model as the caller. Paths and hints are flattened to one line.
+- **Injected verdicts lose.** If the answer contains several verdict objects
+  (for example a `"benign"` one echoed from the file), the most severe wins.
+- **No blind middle.** Files larger than `--max-input-chars` are split at line
+  boundaries and every part is judged; one malicious part flags the file. Past
+  `--max-chunks` parts, the head and tail are judged, the finding is marked
+  `truncated`, and the summary warns.
+- **Evidence is checked.** Each quote is matched back to the source for a real
+  line and column. A quote that is not in the file is marked
+  `evidence_status: unverified` and the finding drops one severity level.
+- **Bounded retries.** Rate limits and `Retry-After` are honored, capped at 60s
+  per wait.
 
 Verdicts are cached on disk under `~/.cache/decloak/judge` (override with
 `--cache-dir`, disable with `--no-cache`). The cache key covers the endpoint,
-model, full prompt, and file content, so editing a file or changing the prompt
-re-judges it. If a model answers with prose instead of JSON, the judge asks it
-once to repair the answer before failing the file.
+model, full prompt, chunk limits, and file content, so editing a file or
+changing the prompt re-judges it. If a model answers with prose instead of
+JSON, the judge asks it once to repair the answer before failing the file.
 
 ```bash
 # Local model through Ollama/vLLM/LiteLLM: no API key required.
 ./decloak-judge scan . --base-url http://localhost:11434/v1 --model llama3.1
 
-# Judge the policy stream too and keep machine-readable output.
-./decloak-judge scan . --policy -f json > judge.json
+# Ask a panel of models; "any" (default) flags if one does, "majority" if half do.
+./decloak-judge scan . --base-url http://localhost:11434/v1 \
+  --models llama3.1,qwen3,gemma3 --strategy majority
+
+# Hide low-confidence verdicts and keep machine-readable output.
+./decloak-judge scan . --policy --min-confidence 0.6 -f json > judge.json
 ```
+
+With a panel, every model's vote is recorded in the finding's `details.votes`,
+and an error from any model fails the file instead of guessing around it.
 
 What leaves your machine: only the files you point the judge at, sent to the
 endpoint you configure. The judge is advisory and can be wrong; it does not run

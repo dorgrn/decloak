@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-const cacheVersion = "1"
+const cacheVersion = "2"
 
 // Cache persists verdicts on disk. It is keyed by the endpoint, model, full
 // judge prompt, and file content, so a prompt change, model change, or file
@@ -50,11 +50,11 @@ func (c *Cache) Dir() string {
 	return c.dir
 }
 
-func (c *Cache) lookup(endpoint, model string, file File, maxRunes int) (Verdict, bool) {
+func (c *Cache) lookup(endpoint, model string, file File, limits string) (Verdict, bool) {
 	if c == nil {
 		return Verdict{}, false
 	}
-	data, err := os.ReadFile(c.path(c.key(endpoint, model, file, maxRunes)))
+	data, err := os.ReadFile(c.path(c.key(endpoint, model, file, limits)))
 	if err != nil {
 		return Verdict{}, false
 	}
@@ -69,11 +69,11 @@ func (c *Cache) lookup(endpoint, model string, file File, maxRunes int) (Verdict
 	return v, true
 }
 
-func (c *Cache) store(endpoint, model string, file File, maxRunes int, v Verdict) {
+func (c *Cache) store(endpoint, model string, file File, limits string, v Verdict) {
 	if c == nil {
 		return
 	}
-	key := c.key(endpoint, model, file, maxRunes)
+	key := c.key(endpoint, model, file, limits)
 	entry := cacheEntry{
 		Version:  cacheVersion,
 		Model:    model,
@@ -111,7 +111,7 @@ func (c *Cache) path(key string) string {
 	return filepath.Join(c.dir, key[:2], key+".json")
 }
 
-func (c *Cache) key(endpoint, model string, file File, maxRunes int) string {
+func (c *Cache) key(endpoint, model string, file File, limits string) string {
 	h := sha256.New()
 	write := func(s string) {
 		_, _ = h.Write([]byte(s))
@@ -123,7 +123,7 @@ func (c *Cache) key(endpoint, model string, file File, maxRunes int) string {
 	write(SystemPrompt)
 	write(file.Path)
 	write(string(file.Language))
-	write(fmt.Sprintf("%d", maxRunes))
+	write(limits)
 	for _, hint := range file.StaticFindings {
 		write(hint)
 	}
