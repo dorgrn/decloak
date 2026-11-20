@@ -31,6 +31,8 @@ type ScanOptions struct {
 	Verbose       bool
 	StdinPaths    bool
 	Policy        bool
+	IgnoreRules   []string
+	IgnoreFile    string
 }
 
 const (
@@ -239,6 +241,8 @@ func addScanFlags(cmd *cobra.Command, opts *ScanOptions) {
 	cmd.Flags().BoolVar(&opts.ResolveMCP, "resolve-mcp", true, "Scan local server scripts referenced by MCP configs")
 	cmd.Flags().BoolVarP(&opts.Verbose, "verbose", "v", false, "Verbose diagnostics on stderr")
 	cmd.Flags().BoolVar(&opts.Policy, "policy", false, "Enable the capability/policy layer (POL-* rules): visible dangerous behavior, not just concealed content")
+	cmd.Flags().StringSliceVar(&opts.IgnoreRules, "ignore-rule", nil, "Rule IDs to suppress (repeatable or comma-separated, e.g. SKL-PERM-006)")
+	cmd.Flags().StringVar(&opts.IgnoreFile, "ignore-file", "", "Path to ignore file (default: .decloakignore in working directory if present)")
 }
 
 func defaultPaths(args []string) []string {
@@ -303,7 +307,28 @@ func scanPaths(opts *ScanOptions, paths []string) ([]model.Finding, error) {
 	if err != nil {
 		return nil, fmt.Errorf("scan execution failed: %w", err)
 	}
-	return findings, nil
+	ignoreFilter, err := loadIgnoreFilter(opts)
+	if err != nil {
+		return nil, err
+	}
+	return ignoreFilter.Apply(findings), nil
+}
+
+func loadIgnoreFilter(opts *ScanOptions) (*rules.IgnoreFilter, error) {
+	var filter *rules.IgnoreFilter
+	var err error
+	if opts.IgnoreFile != "" {
+		filter, err = rules.LoadIgnoreFile(opts.IgnoreFile, false)
+	} else {
+		filter, err = rules.LoadIgnoreFile(".decloakignore", true)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to load ignore file: %w", err)
+	}
+	for _, r := range opts.IgnoreRules {
+		filter.AddRule(r)
+	}
+	return filter, nil
 }
 
 func report(opts *ScanOptions, stdout io.Writer, findings []model.Finding) error {

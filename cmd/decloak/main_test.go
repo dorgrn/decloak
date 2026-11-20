@@ -281,6 +281,41 @@ func TestRunAuditScansInstalledSkills(t *testing.T) {
 	}
 }
 
+func TestRunScanIgnoreRuleAndDecloakIgnore(t *testing.T) {
+	dir := t.TempDir()
+	skill := filepath.Join(dir, "SKILL.md")
+	mustWriteFile(t, skill, "---\nname: demo\nallowed-tools: Bash(*)\n---\n\n# demo\n")
+	t.Chdir(dir)
+
+	// Without ignore, SKL-PERM-006 (MEDIUM) is reported and fails with --fail-on medium.
+	code, stdout, stderr := runCLI(t, "", "scan", skill, "--fail-on", "medium")
+	if code != 1 {
+		t.Fatalf("baseline exit code = %d, want 1; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "SKL-PERM-006") {
+		t.Fatalf("baseline stdout missing SKL-PERM-006: %q", stdout)
+	}
+
+	// --ignore-rule suppresses SKL-PERM-006.
+	code, stdout, stderr = runCLI(t, "", "scan", skill, "--fail-on", "medium", "--ignore-rule", "SKL-PERM-006")
+	if code != 0 {
+		t.Fatalf("--ignore-rule exit code = %d, want 0; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+
+	// .decloakignore in working directory suppresses scoped rule.
+	mustWriteFile(t, filepath.Join(dir, ".decloakignore"), "SKL-PERM-006:SKILL.md\n")
+	code, stdout, stderr = runCLI(t, "", "scan", skill, "--fail-on", "medium")
+	if code != 0 {
+		t.Fatalf(".decloakignore exit code = %d, want 0; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+
+	// Explicit missing --ignore-file exits 2.
+	code, _, stderr = runCLI(t, "", "scan", skill, "--ignore-file", "does-not-exist.ignore")
+	if code != 2 {
+		t.Fatalf("missing --ignore-file exit code = %d, want 2; stderr=%q", code, stderr)
+	}
+}
+
 func mustWriteFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {

@@ -78,6 +78,22 @@ decloak scan ~/.claude/skills --policy
 Policy findings carry `"category": "policy"` in JSON output, so they can be
 triaged separately from concealment findings.
 
+### Ignore known findings
+
+Suppress specific rules from the CLI or a `.decloakignore` file in your working
+directory (not inside untrusted skills, so a skill cannot suppress itself):
+
+```bash
+decloak scan . --ignore-rule SKL-PERM-006
+```
+
+```text
+# .decloakignore
+SKL-PERM-006                  # ignore rule everywhere
+SH-DL-001:docs/install.md     # ignore rule in one file
+testdata/*.md                 # ignore all rules in matching files
+```
+
 ### Semantic review with an LLM judge (optional, separate binary)
 
 Static rules are deliberately blind to intent written in plain, convincing prose.
