@@ -34,6 +34,12 @@ MEDIUM    SKL-PERM-006  markdown  SKILL.md:4:1    allowed-tools: Read, Bash(*)
 ## Install
 
 ```bash
+brew install dorgrn/tap/decloak
+```
+
+Or with Go:
+
+```bash
 go install github.com/dorgrn/decloak/cmd/decloak@latest
 go install github.com/dorgrn/decloak/cmd/decloak-judge@latest   # optional LLM judge
 ```

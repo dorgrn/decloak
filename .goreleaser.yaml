@@ -57,3 +57,20 @@ changelog:
       - "^docs:"
       - "^test:"
       - "^chore:"
+
+brews:
+  - name: decloak
+    repository:
+      owner: dorgrn
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    skip_upload: "{{ if not .Env.HOMEBREW_TAP_GITHUB_TOKEN }}true{{ end }}"
+    directory: Formula
+    homepage: https://github.com/dorgrn/decloak
+    description: Find instructions hidden in AI agent skills, rules files, and MCP servers
+    license: Apache-2.0
+    install: |
+      bin.install "decloak"
+      bin.install "decloak-judge"
+    test: |
+      assert_match "decloak", shell_output("#{bin}/decloak --version")
