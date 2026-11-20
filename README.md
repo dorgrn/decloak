@@ -9,9 +9,10 @@
 
 Agent skills and rules files are instructions your agent follows with your permissions. decloak finds what's been hidden in them: prompt injections in HTML comments, invisible Unicode, encoded payloads, commands moved into images, credential-exfiltration directives, and download-and-exec chains in the scripts behind your MCP servers.
 
-One static binary. No API key, no LLM, no network, nothing executed.
-
-Try it in your browser (WASM, runs locally in-tab): **[dorgrn.github.io/decloak](https://dorgrn.github.io/decloak/)**
+- **100% offline single binary:** No API key, no LLM, no network (`TestBinaryIsOffline`), nothing executed.
+- **Beats LLM-backed scanners offline:** On held-out [MaliciousSkillBench](#benchmark) (`HIGH+`), `decloak --policy` reaches **36.7% recall at 3.3% FPR** vs. Cisco `skill-scanner`'s **7.7% / 4.0%** (rules) and **33.7% / 6.4%** (rules + Gemma 4 26B LLM).
+- **One-command machine audit:** Run `decloak audit` to scan installed skills, rules, and MCP configs across 15+ agents (Claude Code, Cursor, Codex, Copilot, Windsurf, Gemini CLI, OpenCode, and more).
+- **Try it in your browser (WASM, runs locally in-tab):** **[dorgrn.github.io/decloak](https://dorgrn.github.io/decloak/)**
 
 ![decloak audit finding a malicious skill](docs/demo.gif)
 
@@ -196,7 +197,7 @@ The action downloads a checksum-verified release binary; nothing is built or sen
 ```yaml
 repos:
   - repo: https://github.com/dorgrn/decloak
-    rev: v0.2.0
+    rev: v0.5.0
     hooks:
       - id: decloak
       - id: decloak-verify   # optional: enforce decloak.lock
