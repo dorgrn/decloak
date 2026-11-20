@@ -11,6 +11,8 @@ Agent skills and rules files are instructions your agent follows with your permi
 
 One static binary. No API key, no LLM, no network, nothing executed.
 
+Try it in your browser (WASM, runs locally in-tab): **[dorgrn.github.io/decloak](https://dorgrn.github.io/decloak/)**
+
 ![decloak audit finding a malicious skill](docs/demo.gif)
 
 ```console
@@ -167,6 +169,7 @@ Exit codes: `0` clean, `1` findings at or above `--fail-on` (default `high`) or 
   with:
     changed-only: "true"   # on pull requests, scan only changed files
     fail-on: high
+    policy: "false"        # set "true" for plain-sight capability policy checks
     sarif: "true"          # show findings in the Security tab (needs security-events: write)
 ```
 

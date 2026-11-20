@@ -15,6 +15,9 @@ inputs:
   fail-on:
     description: Fail the job if any finding is at or above this severity (critical, high, medium, low).
     default: high
+  policy:
+    description: Enable opt-in capability policy checks (--policy).
+    default: "false"
   sarif:
     description: Write results to decloak.sarif and upload them to GitHub code scanning (needs security-events write permission).
     default: "false"
@@ -56,12 +59,16 @@ runs:
         INPUT_PATH: ${{ inputs.path }}
         CHANGED_ONLY: ${{ inputs.changed-only }}
         FAIL_ON: ${{ inputs.fail-on }}
+        POLICY: ${{ inputs.policy }}
         SARIF: ${{ inputs.sarif }}
         BASE_REF: ${{ github.base_ref }}
         EVENT: ${{ github.event_name }}
       run: |
         set -uo pipefail
         args=(--fail-on "$FAIL_ON")
+        if [ "$POLICY" = "true" ]; then
+          args+=(--policy)
+        fi
         if [ "$SARIF" = "true" ]; then
           args+=(--format sarif)
           echo "sarif-file=decloak.sarif" >> "$GITHUB_OUTPUT"
