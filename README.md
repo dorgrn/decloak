@@ -260,7 +260,30 @@ decloak contains no HTTP client, no TLS, and no way to run a subprocess. This is
 
 ### MaliciousSkillBench
 
-To score decloak on the held-out split of [MaliciousSkillBench](https://huggingface.co/datasets/ProtectSkills/MaliciousSkillBench), run `make bench-msb` (needs `uv`; downloads a pinned dataset revision into `.bench/`). Most malicious skills in that benchmark are harmful instructions in plain prose with nothing hidden, so expect low recall without `--policy`: decloak's default rules find concealed content, not plain-sight intent. On the `source_disjoint` test split, the default rules reach **3.9% recall at 2.6% FPR** (HIGH+), while `--policy` reaches **36.7% recall at 3.3% FPR** (HIGH+; 37.2%/7.2% at LOW+). On the validation split, `--policy` reaches **36.3% recall at 1.2% FPR** (HIGH+; 44.4%/3.6% at LOW+). These are measured against a held-out split and are not tuned on it; treat them as directional. To score the optional semantic judge on the same split, run `make bench-msb-judge PART=validation` with `OPENCODE_API_KEY` set. It defaults to the `opencode` provider and `deepseek-v4.1-flash-free`; override with `JUDGE_PROVIDER`/`JUDGE_MODEL`. Verdicts are cached, so reruns only spend tokens on edited files or changed prompts.
+On the held-out `source_disjoint` test split of [MaliciousSkillBench](https://huggingface.co/datasets/ProtectSkills/MaliciousSkillBench) (**839 malicious, 545 benign**), most malicious skills are harmful instructions in plain prose with nothing hidden. Static concealment rules alone are intentionally low-noise, while `--policy` adds plain-sight capability checks—still 100% offline, deterministic, and with zero LLM calls:
+
+| Scanner | Mode | Recall (`HIGH+`) | Benign FPR | Source |
+|---|---|---:|---:|---|
+| **`decloak --policy`** | Offline static binary | **36.7%** | **3.3%** | `make bench-msb` |
+| `decloak` (default) | Offline concealment rules only | 3.9% | 2.6% | `make bench-msb` |
+| Cisco `skill-scanner` | Rules alone (`HIGH`) | 7.7% | 4.0% | [Cisco README](https://github.com/cisco-ai-defense/skill-scanner) |
+| Cisco `skill-scanner` | Rules + LLM (`Gemma 4 26B`, `HIGH`) | 33.7% | 6.4% | [Cisco README](https://github.com/cisco-ai-defense/skill-scanner) |
+| Cisco `skill-scanner` | Rules + LLM (`Gemma 4 26B`, `MEDIUM+`) | 66.7% | 15.4% | [Cisco README](https://github.com/cisco-ai-defense/skill-scanner) |
+| `SkillSpector-static` | Static rules only | 0.0% | 0.55% | [MSB paper](https://arxiv.org/abs/2608.19901) |
+| `Word-SVM` | Learned TF-IDF baseline | 95.6% | 62.4% | [MSB paper](https://arxiv.org/abs/2608.19901) |
+
+On the `validation` split, `decloak --policy` reaches **36.3% recall at 1.2% FPR** (`HIGH+`; 44.4% / 3.6% at `LOW+`).
+
+For plain-prose semantic attacks, the optional [`decloak-judge`](cmd/decloak-judge/main.go) binary pairs static hints with an LLM judge (using unforgeable file boundaries and evidence verification). In a directional check on `validation` shard `0/16` (48 skills: 39 malicious, 9 benign), the LLM judge reached **89.7% recall at 0.0% FPR** (`HIGH+`) and **92.3% recall at 11.1% FPR** (`MEDIUM+`).
+
+Reproduce locally (needs `uv`; downloads the pinned dataset revision into `.bench/`):
+
+```bash
+make bench-msb                                # static scan on held-out test split
+make bench-msb-judge PART=validation          # optional LLM judge (needs OPENCODE_API_KEY)
+```
+
+`bench-msb-judge` defaults to `--provider opencode` and `deepseek-v4.1-flash-free`; override with `JUDGE_PROVIDER`/`JUDGE_MODEL`. Verdicts are cached, so reruns only spend tokens on edited files or changed prompts.
 
 ### Other checks
 
