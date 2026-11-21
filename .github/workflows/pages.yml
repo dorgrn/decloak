@@ -1,8 +1,14 @@
 name: Pages
 
 # Publishes the in-browser demo (site/ + decloak.wasm) to GitHub Pages.
-# Manual only while the repository is private (Pages needs a paid plan there).
 on:
+  push:
+    branches: [main]
+    paths:
+      - "site/**"
+      - "cmd/decloak-wasm/**"
+      - "internal/**"
+      - ".github/workflows/pages.yml"
   workflow_dispatch:
 
 permissions:

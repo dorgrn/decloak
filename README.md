@@ -203,7 +203,7 @@ The action downloads a checksum-verified release binary; nothing is built or sen
 ```yaml
 repos:
   - repo: https://github.com/dorgrn/decloak
-    rev: v0.5.0
+    rev: v0.6.0
     hooks:
       - id: decloak
       - id: decloak-verify   # optional: enforce decloak.lock
