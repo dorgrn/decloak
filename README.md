@@ -171,12 +171,16 @@ reviewer, not as a replacement for the deterministic scan.
 
 ### Detect rug pulls
 
-Approve a set of skills and MCP scripts once, then fail if any of them changes silently:
+A skill or MCP server that was clean when you reviewed it can turn malicious after an auto-update, a dependency bump, or a quiet edit to `AGENTS.md`/`.cursorrules`. Pin the approved state once with `decloak lock`, then fail if anything changes silently:
 
 ```bash
-decloak lock .      # writes decloak.lock with SHA-256 of every agent file
-decloak verify .    # exit 1 and list changed / added / removed files
+decloak lock .      # writes decloak.lock (SHA-256 of every skill, rules file, and MCP script)
+decloak verify .    # exits 1 and lists changed / added / removed files
 ```
+
+- **What gets hashed:** Every target discovered by `decloak` (skills, rules files, MCP configs, and the local server scripts they reference), saved as sorted JSON (`sha256:<hex>`) for clean git diffs.
+- **What `verify` catches:** Any `changed`, `added`, or `removed` file since the lock was written, exiting `1` so CI or `pre-commit` (`decloak-verify` hook) blocks unreviewed drift.
+- **Custom lockfile path:** Pass `--lockfile path/to/decloak.lock` (for example, to lock `~/.claude/skills` into a dotfile).
 
 Exit codes: `0` clean, `1` findings at or above `--fail-on` (default `high`) or lock drift, `2` error.
 
