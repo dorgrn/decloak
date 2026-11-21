@@ -5,14 +5,14 @@
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Offline](https://img.shields.io/badge/network-none-success.svg)](#offline-by-design)
 
-**See what's hiding in your AI agent's skills, rules, and MCP servers, without running them.**
+**Find hidden instructions in AI agent skills, rules, and MCP servers—offline, zero LLM, without running them.**
 
-Agent skills and rules files are instructions your agent follows with your permissions. decloak finds what's been hidden in them: prompt injections in HTML comments, invisible Unicode, encoded payloads, commands moved into images, credential-exfiltration directives, and download-and-exec chains in the scripts behind your MCP servers.
-
-- **100% offline single binary:** No API key, no LLM, no network (`TestBinaryIsOffline`), nothing executed.
-- **Beats LLM-backed scanners offline:** On held-out [MaliciousSkillBench](#benchmark) (`HIGH+`), `decloak --policy` reaches **36.7% recall at 3.3% FPR** vs. Cisco `skill-scanner`'s **7.7% / 4.0%** (rules) and **33.7% / 6.4%** (rules + Gemma 4 26B LLM).
-- **One-command machine audit:** Run `decloak audit` to scan installed skills, rules, and MCP configs across 15+ agents (Claude Code, Cursor, Codex, Copilot, Windsurf, Gemini CLI, OpenCode, and more).
-- **Try it in your browser (WASM, runs locally in-tab):** **[dorgrn.github.io/decloak](https://dorgrn.github.io/decloak/)**
+- **Beats Cisco's LLM scanner offline:** **36.7% recall / 3.3% FPR** on [MaliciousSkillBench](#benchmark) (`HIGH+`, `--policy`) vs. Cisco `skill-scanner`'s **7.7% / 4.0%** (rules) and **33.7% / 6.4%** (rules + Gemma 4 26B LLM).
+- **Provably offline:** One static binary—no `net/http`, `crypto/tls`, or `os/exec` ([enforced by test](#offline-by-design)).
+- **Audits 15+ agents in one command:** `brew install dorgrn/tap/decloak && decloak audit` (Claude Code, Cursor, Codex, Copilot, Windsurf, Gemini CLI, OpenCode).
+- **Deep static decoding + taint:** 4-layer nested base64/hex/gzip/zlib, tree-sitter taint across code fences, and SkillCamo image/cloze-split injections.
+- **Rug-pull defense:** `decloak lock` / `verify` pins SHA-256 hashes of approved skills & MCP scripts and fails CI on silent drift.
+- **Try in browser (WASM, in-tab):** **[dorgrn.github.io/decloak](https://dorgrn.github.io/decloak/)**
 
 ![decloak audit finding a malicious skill](docs/demo.gif)
 
