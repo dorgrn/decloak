@@ -3,7 +3,7 @@ module github.com/dorgrn/decloak
 go 1.26.0
 
 require (
-	github.com/odvcencio/gotreesitter v0.57.0
+	github.com/odvcencio/gotreesitter v0.58.0
 	github.com/spf13/cobra v1.10.2
 )
 
